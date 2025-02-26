@@ -105,10 +105,10 @@ public class RecceiverApplication implements CommandLineRunner {
             while (iter.hasNext()) {
 
                 SelectionKey key = iter.next();
+                System.out.println(key.isValid() + " " + key.channel());
 
                 if (key.isAcceptable()) {
                     register(selector, serverSocket);
-                    //client.write()
                     log.info(selector + " " + serverSocket);
                 }
                 if (key.isReadable()) {
@@ -219,7 +219,28 @@ public class RecceiverApplication implements CommandLineRunner {
 
         SocketChannel client = serverSocket.accept();
         client.configureBlocking(false);
-        client.register(selector, SelectionKey.OP_READ);
+        //client.register(selector, SelectionKey.OP_READ);
+
+        // try with new thread
+        Thread t = new Thread(() -> {
+            Processor p = new Processor(client);
+            while(true) {
+                if( client.isConnected() ) {
+                    try {
+                        p.process();
+                    } catch (IOException e) {
+                        try {
+                            client.close();
+                        } catch (IOException ex) {
+                            ex.printStackTrace();
+                        }
+                        e.printStackTrace();
+                    }
+                }
+            }
+
+        });
+        t.start();
     }
 
     @Bean
@@ -253,7 +274,12 @@ public class RecceiverApplication implements CommandLineRunner {
             channel.read(readBuffer);
             System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()));
             readBuffer.flip();
-            System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()));
+            System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()) + " " + readBuffer.remaining());
+            if(readBuffer.remaining() <= 0) {
+                System.out.println("need to close");
+                channel.close();
+            }
+
 
             while (readBuffer.hasRemaining()) {
                 System.out.println("remaining buffer is " + readBuffer.position() + " " + readBuffer.limit() + " " + readBuffer.remaining() + " " + processingPartialMessage + " " + partialMessage);
@@ -415,39 +441,5 @@ public class RecceiverApplication implements CommandLineRunner {
         }
     }
 
-    public static class Message {
-        String id;
-        char msgId;
-        int msgLen;
 
-        ByteBuffer msgBody;
-
-        public Message(String id, char msgId, int msgLen) {
-            this.id = id;
-            this.msgId = msgId;
-            this.msgLen = msgLen;
-            this.msgBody = ByteBuffer.allocate(msgLen);
-        }
-
-        public String getId() {
-            return id;
-        }
-
-        public char getMsgId() {
-            return msgId;
-        }
-
-        public int getMsgLen() {
-            return msgLen;
-        }
-
-        public ByteBuffer getMsgBody() {
-            return msgBody;
-        }
-
-        public int getRemainingBytes() {
-            return msgLen - msgBody.position();
-        }
-
-    }
 }
