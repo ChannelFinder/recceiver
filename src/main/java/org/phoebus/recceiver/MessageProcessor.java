@@ -17,8 +17,6 @@ import org.phoebus.recceiver.spi.DelRecordMessage;
 import org.phoebus.recceiver.spi.RecSyncProcessorDispatcher;
 import org.phoebus.recceiver.spi.RecSyncTransaction;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class MessageProcessor {
@@ -32,7 +30,7 @@ public class MessageProcessor {
     private volatile Integer outstandingPingNonce;
     private volatile boolean pingLoopStarted = false;
     private volatile boolean connectionClosedNotified = false;
-    private ScheduledExecutorService pingService;
+    private Thread pingThread;
 
     private final List<AddRecordMessage> recordsToAdd = new ArrayList<>();
     private final List<DelRecordMessage> recordsToDelete = new ArrayList<>();
@@ -235,19 +233,25 @@ public class MessageProcessor {
         }
 
         pingLoopStarted = true;
-        pingService = Executors.newSingleThreadScheduledExecutor();
-        pingService.scheduleAtFixedRate(() -> {
-            try {
-                sendPing();
-            } catch (IOException e) {
-                shutdown("ping loop io error");
+        pingThread = Thread.ofVirtual().name("recceiver-ping-", 0).start(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
                 try {
-                    channel.close();
-                } catch (IOException ex) {
-                    ex.printStackTrace();
+                    TimeUnit.SECONDS.sleep(pingIntervalSeconds);
+                    sendPing();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (IOException e) {
+                    shutdown("ping loop io error");
+                    try {
+                        channel.close();
+                    } catch (IOException ex) {
+                        ex.printStackTrace();
+                    }
+                    break;
                 }
             }
-        }, pingIntervalSeconds, pingIntervalSeconds, TimeUnit.SECONDS);
+        });
     }
 
     private synchronized void sendPing() throws IOException {
@@ -302,10 +306,11 @@ public class MessageProcessor {
     }
 
     public synchronized void shutdown(String reason) {
-        if (pingService != null) {
-            pingService.shutdownNow();
-            pingService = null;
+        if (pingThread != null) {
+            pingThread.interrupt();
+            pingThread = null;
         }
+        pingLoopStarted = false;
         outstandingPingNonce = null;
         notifyConnectionClosed(reason);
     }
