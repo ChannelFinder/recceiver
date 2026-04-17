@@ -108,7 +108,7 @@ public class RecceiverApplication implements CommandLineRunner {
                 System.out.println(key.isValid() + " " + key.channel());
 
                 if (key.isAcceptable()) {
-                    register(selector, serverSocket);
+                    register(serverSocket);
                     log.info(selector + " " + serverSocket);
                 }
                 if (key.isReadable()) {
@@ -119,7 +119,7 @@ public class RecceiverApplication implements CommandLineRunner {
                         channelMap.get(client.getRemoteAddress().toString()).process();
                     } else {
                         System.out.println("Reading from new remote address : " + client.getRemoteAddress().toString());
-                        channelMap.put(client.getRemoteAddress().toString(), new Processor(client));
+                        channelMap.put(client.getRemoteAddress().toString(), new Processor(client, Math.max(1L, Math.round(tcptimeout))));
                         channelMap.get(client.getRemoteAddress().toString()).process();
                     }
                 }
@@ -214,32 +214,28 @@ public class RecceiverApplication implements CommandLineRunner {
 
     }
 
-    private static void register(Selector selector, ServerSocketChannel serverSocket)
+    private void register(ServerSocketChannel serverSocket)
             throws IOException {
 
         SocketChannel client = serverSocket.accept();
         client.configureBlocking(true);
-        //client.register(selector, SelectionKey.OP_READ);
 
         // try with new thread
         Thread t = new Thread(() -> {
-            Processor p = new Processor(client);
-            while (client.isOpen()) {
-                if (client.isConnected()) {
-                    try {
-                        p.process();
-                    } catch (IOException e) {
-                        try {
-                            client.close();
-                        } catch (IOException ex) {
-                            ex.printStackTrace();
-                        }
-                        e.printStackTrace();
-                        break;
-                    }
-                } else {
-                    break;
+            Processor p = new Processor(client, Math.max(1L, Math.round(tcptimeout)));
+            try {
+                while (client.isOpen() && client.isConnected()) {
+                    p.process();
                 }
+            } catch (IOException e) {
+                try {
+                    client.close();
+                } catch (IOException ex) {
+                    ex.printStackTrace();
+                }
+                e.printStackTrace();
+            } finally {
+                p.shutdown();
             }
 
         });
@@ -253,11 +249,17 @@ public class RecceiverApplication implements CommandLineRunner {
 
     public static class Processor {
         private final SocketChannel channel;
+        private final long pingIntervalSeconds;
+        private final Random pingRandom = new Random();
 
         private boolean processingPartialMessage = false;
+        private volatile Integer outstandingPingNonce;
+        private volatile boolean pingLoopStarted = false;
+        private ScheduledExecutorService pingService;
 
-        public Processor(SocketChannel channel) {
+        public Processor(SocketChannel channel, long pingIntervalSeconds) {
             this.channel = channel;
+            this.pingIntervalSeconds = pingIntervalSeconds;
         }
 
         ConcurrentLinkedQueue<Message> completeMessages = new ConcurrentLinkedQueue<>();
@@ -280,6 +282,7 @@ public class RecceiverApplication implements CommandLineRunner {
             System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()) + " " + readBuffer.remaining());
             if(bytesRead == -1) {
                 System.out.println("EOF detected - closing connection");
+                shutdown();
                 channel.close();
                 return;
             }
@@ -378,7 +381,15 @@ public class RecceiverApplication implements CommandLineRunner {
                             break;
                         case 0x0002:
                             System.out.println("received 0002");
-                            System.out.println(String.valueOf(StandardCharsets.US_ASCII.decode(message.msgBody)));
+                            if (message.msgBody.remaining() >= Integer.BYTES) {
+                                int nonce = message.msgBody.getInt();
+                                if (outstandingPingNonce != null && outstandingPingNonce == nonce) {
+                                    System.out.println("received matching pong for nonce " + nonce);
+                                    outstandingPingNonce = null;
+                                } else {
+                                    System.out.println("received unexpected pong nonce " + nonce);
+                                }
+                            }
                             break;
                         case 0x0003:
                             System.out.println("received 0003");
@@ -406,6 +417,7 @@ public class RecceiverApplication implements CommandLineRunner {
                         case 0x0005:
                             System.out.println("received 0005 - upload completed... start ping pong");
                             System.out.println(String.valueOf(StandardCharsets.US_ASCII.decode(message.msgBody)));
+                            startPingLoop();
                             break;
                         case 0x0006:
                             System.out.println("received 0006 - Add info " + message.msgBody.remaining());
@@ -450,6 +462,52 @@ public class RecceiverApplication implements CommandLineRunner {
             return new Message(id, msgId, msgLen);
         }
 
+        private synchronized void startPingLoop() {
+            if (pingLoopStarted) {
+                return;
+            }
+
+            pingLoopStarted = true;
+            pingService = Executors.newSingleThreadScheduledExecutor();
+            pingService.scheduleAtFixedRate(() -> {
+                try {
+                    sendPing();
+                } catch (IOException e) {
+                    try {
+                        channel.close();
+                    } catch (IOException ex) {
+                        ex.printStackTrace();
+                    }
+                }
+            }, pingIntervalSeconds, pingIntervalSeconds, TimeUnit.SECONDS);
+        }
+
+        private synchronized void sendPing() throws IOException {
+            if (!channel.isOpen()) {
+                shutdown();
+                return;
+            }
+
+            if (outstandingPingNonce != null) {
+                System.out.println("closing channel due to missed pong for nonce " + outstandingPingNonce);
+                shutdown();
+                channel.close();
+                return;
+            }
+
+            int nonce = pingRandom.nextInt();
+            ByteBuffer pingMessage = ByteBuffer.allocate(12);
+            pingMessage.put("RC".getBytes(StandardCharsets.US_ASCII));
+            pingMessage.putChar(PING_MSG_ID);
+            pingMessage.putInt(Integer.BYTES);
+            pingMessage.putInt(nonce);
+            pingMessage.flip();
+
+            channel.write(pingMessage);
+            outstandingPingNonce = nonce;
+            System.out.println("sent ping with nonce " + nonce);
+        }
+
 
         /**
          * Copy exactly {@code length} bytes from the source buffer's current position into the
@@ -470,6 +528,14 @@ public class RecceiverApplication implements CommandLineRunner {
             slice.limit(length);
             destination.put(slice);
             source.position(source.position() + length);
+        }
+
+        public synchronized void shutdown() {
+            if (pingService != null) {
+                pingService.shutdownNow();
+                pingService = null;
+            }
+            outstandingPingNonce = null;
         }
     }
 
