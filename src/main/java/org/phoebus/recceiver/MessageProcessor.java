@@ -5,6 +5,10 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
@@ -15,21 +19,29 @@ public class MessageProcessor {
     private final SocketChannel channel;
     private final long pingIntervalSeconds;
     private final int serverKey;
+    private final RecSyncProcessorDispatcher processorDispatcher;
     private final Random pingRandom = new Random();
 
     private boolean processingPartialMessage = false;
     private volatile Integer outstandingPingNonce;
     private volatile boolean pingLoopStarted = false;
+    private volatile boolean connectionClosedNotified = false;
     private ScheduledExecutorService pingService;
+
+    private final List<AddRecordMessage> recordsToAdd = new ArrayList<>();
+    private final List<DelRecordMessage> recordsToDelete = new ArrayList<>();
+    private final List<AddInfoMessage> infoMessages = new ArrayList<>();
+    private final Map<String, String> clientInfos = new LinkedHashMap<>();
 
     ConcurrentLinkedQueue<Message> completeMessages = new ConcurrentLinkedQueue<>();
     Message partialMessage;
     ByteBuffer leftOver;
 
-    public MessageProcessor(SocketChannel channel, long pingIntervalSeconds, int serverKey) {
+    public MessageProcessor(SocketChannel channel, long pingIntervalSeconds, int serverKey, RecSyncProcessorDispatcher processorDispatcher) {
         this.channel = channel;
         this.pingIntervalSeconds = pingIntervalSeconds;
         this.serverKey = serverKey;
+        this.processorDispatcher = processorDispatcher == null ? RecSyncProcessorDispatcher.empty() : processorDispatcher;
     }
 
     public void process() throws IOException {
@@ -48,7 +60,7 @@ public class MessageProcessor {
         System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()) + " " + readBuffer.remaining());
         if (bytesRead == -1) {
             System.out.println("EOF detected - closing connection");
-            shutdown();
+            shutdown("eof");
             channel.close();
             return;
         }
@@ -155,6 +167,7 @@ public class MessageProcessor {
                         System.out.println("received 0003");
                         try {
                             AddRecordMessage addRecordMessage = RecSyncMessageBodyParser.parseAddRecord(message.msgBody);
+                            recordsToAdd.add(addRecordMessage);
                             System.out.println("Add record : " + addRecordMessage);
                         } catch (Exception e) {
                             System.out.println("failed to read " + e.getMessage());
@@ -163,6 +176,7 @@ public class MessageProcessor {
                     case 0x0004:
                         try {
                             DelRecordMessage delRecordMessage = RecSyncMessageBodyParser.parseDelRecord(message.msgBody);
+                            recordsToDelete.add(delRecordMessage);
                             System.out.println("received 0004 - DELETE " + delRecordMessage);
                         } catch (Exception e) {
                             System.out.println("failed to read delete message " + e.getMessage());
@@ -171,12 +185,17 @@ public class MessageProcessor {
                     case 0x0005:
                         System.out.println("received 0005 - upload completed... start ping pong");
                         System.out.println(String.valueOf(StandardCharsets.US_ASCII.decode(message.msgBody)));
+                        dispatchTransaction();
                         startPingLoop();
                         break;
                     case 0x0006:
                         System.out.println("received 0006 - Add info " + message.msgBody.remaining());
                         try {
                             AddInfoMessage addInfoMessage = RecSyncMessageBodyParser.parseAddInfo(message.msgBody);
+                            infoMessages.add(addInfoMessage);
+                            if (addInfoMessage.recId() == 0) {
+                                clientInfos.put(addInfoMessage.key(), addInfoMessage.value());
+                            }
                             System.out.println("Add info : " + addInfoMessage);
                         } catch (Exception e) {
                             System.out.println("failed to read info message " + e.getMessage());
@@ -215,6 +234,7 @@ public class MessageProcessor {
             try {
                 sendPing();
             } catch (IOException e) {
+                shutdown("ping loop io error");
                 try {
                     channel.close();
                 } catch (IOException ex) {
@@ -232,7 +252,7 @@ public class MessageProcessor {
 
         if (outstandingPingNonce != null) {
             System.out.println("closing channel due to missed pong for nonce " + outstandingPingNonce);
-            shutdown();
+            shutdown("missed pong");
             channel.close();
             return;
         }
@@ -272,11 +292,46 @@ public class MessageProcessor {
     }
 
     public synchronized void shutdown() {
+        shutdown("shutdown");
+    }
+
+    public synchronized void shutdown(String reason) {
         if (pingService != null) {
             pingService.shutdownNow();
             pingService = null;
         }
         outstandingPingNonce = null;
+        notifyConnectionClosed(reason);
+    }
+
+    private void dispatchTransaction() {
+        RecSyncTransaction transaction = new RecSyncTransaction(
+                sourceAddress(),
+                List.copyOf(recordsToAdd),
+                List.copyOf(recordsToDelete),
+                List.copyOf(infoMessages),
+                Map.copyOf(clientInfos));
+        processorDispatcher.dispatchCommit(transaction);
+        recordsToAdd.clear();
+        recordsToDelete.clear();
+        infoMessages.clear();
+        clientInfos.clear();
+    }
+
+    private void notifyConnectionClosed(String reason) {
+        if (connectionClosedNotified) {
+            return;
+        }
+        connectionClosedNotified = true;
+        processorDispatcher.dispatchConnectionClosed(new ConnectionClosedEvent(sourceAddress(), reason));
+    }
+
+    private String sourceAddress() {
+        try {
+            return String.valueOf(channel.getRemoteAddress());
+        } catch (IOException e) {
+            return "unknown";
+        }
     }
 }
 

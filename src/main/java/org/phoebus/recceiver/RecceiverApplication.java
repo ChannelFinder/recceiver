@@ -49,6 +49,7 @@ public class RecceiverApplication implements CommandLineRunner {
 
     private final ScheduledExecutorService udpAnnouncerService = Executors.newScheduledThreadPool(1);
     private static int serverKey;
+    private RecSyncProcessorDispatcher processorDispatcher;
 
     public static void main(String[] args) throws InterruptedException {
         context = SpringApplication.run(RecceiverApplication.class, args);
@@ -69,6 +70,7 @@ public class RecceiverApplication implements CommandLineRunner {
     @Override
     public void run(String... args) throws Exception {
         log.info("Starting running");
+        processorDispatcher = RecSyncProcessorRegistry.loadDispatcher();
 
         Random rand = new Random();
         serverKey = rand.nextInt();
@@ -121,7 +123,7 @@ public class RecceiverApplication implements CommandLineRunner {
 
         // try with new thread
         Thread t = new Thread(() -> {
-            MessageProcessor p = new MessageProcessor(client, Math.max(1L, Math.round(tcptimeout)), serverKey);
+            MessageProcessor p = new MessageProcessor(client, Math.max(1L, Math.round(tcptimeout)), serverKey, processorDispatcher);
             try {
                 while (client.isOpen() && client.isConnected()) {
                     p.process();
