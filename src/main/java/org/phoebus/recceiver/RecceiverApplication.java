@@ -123,8 +123,8 @@ public class RecceiverApplication implements CommandLineRunner {
         SocketChannel client = serverSocket.accept();
         client.configureBlocking(true);
 
-        // try with new thread
-        Thread t = new Thread(() -> {
+        // Run each client handler on its own virtual thread.
+        Thread.ofVirtual().name("recceiver-client-", 0).start(() -> {
             MessageProcessor p = new MessageProcessor(client, Math.max(1L, Math.round(tcptimeout)), serverKey, processorDispatcher);
             try {
                 while (client.isOpen() && client.isConnected()) {
@@ -142,7 +142,6 @@ public class RecceiverApplication implements CommandLineRunner {
             }
 
         });
-        t.start();
     }
 
     @Bean
