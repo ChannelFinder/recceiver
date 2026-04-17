@@ -218,14 +218,14 @@ public class RecceiverApplication implements CommandLineRunner {
             throws IOException {
 
         SocketChannel client = serverSocket.accept();
-        client.configureBlocking(false);
+        client.configureBlocking(true);
         //client.register(selector, SelectionKey.OP_READ);
 
         // try with new thread
         Thread t = new Thread(() -> {
             Processor p = new Processor(client);
-            while(true) {
-                if( client.isConnected() ) {
+            while (client.isOpen()) {
+                if (client.isConnected()) {
                     try {
                         p.process();
                     } catch (IOException e) {
@@ -235,7 +235,10 @@ public class RecceiverApplication implements CommandLineRunner {
                             ex.printStackTrace();
                         }
                         e.printStackTrace();
+                        break;
                     }
+                } else {
+                    break;
                 }
             }
 
@@ -271,15 +274,19 @@ public class RecceiverApplication implements CommandLineRunner {
                 readBuffer.put(leftOver);
                 leftOver = null;
             }
-            channel.read(readBuffer);
+            int bytesRead = channel.read(readBuffer);
             System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()));
             readBuffer.flip();
             System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()) + " " + readBuffer.remaining());
-            if(readBuffer.remaining() <= 0) {
-                System.out.println("need to close");
+            if(bytesRead == -1) {
+                System.out.println("EOF detected - closing connection");
                 channel.close();
+                return;
             }
-
+            if(bytesRead == 0) {
+                System.out.println("No data available");
+                return;
+            }
 
             while (readBuffer.hasRemaining()) {
                 System.out.println("remaining buffer is " + readBuffer.position() + " " + readBuffer.limit() + " " + readBuffer.remaining() + " " + processingPartialMessage + " " + partialMessage);
@@ -287,11 +294,15 @@ public class RecceiverApplication implements CommandLineRunner {
                 if (!processingPartialMessage && readBuffer.remaining() >= 8) {
                     processingPartialMessage = true;
                     Message message = processHeader(readBuffer);
+                    if (message == null) {
+                        processingPartialMessage = false;
+                        partialMessage = null;
+                        break;
+                    }
                     System.out.println("Processing a new message... Buffer size pre processing " + readBuffer.remaining());
                     if (readBuffer.remaining() >= message.msgLen) {
-                        message.getMsgBody().put(readBuffer.array(), 0, message.msgLen);
+                        copyBytes(readBuffer, message.getMsgBody(), message.msgLen);
                         message.getMsgBody().flip();
-                        readBuffer.position(readBuffer.position() + message.msgLen);
                         // now we have a complete message put it in the queue
                         completeMessages.add(message);
                         processingPartialMessage = false;
@@ -315,8 +326,7 @@ public class RecceiverApplication implements CommandLineRunner {
                     System.out.println("Processing partial Message " + readBuffer.remaining() + " " + partialMessage.getRemainingBytes());
                     if (readBuffer.remaining() >= partialMessage.getRemainingBytes()) {
                         int remainingBytes = partialMessage.getRemainingBytes();
-                        partialMessage.getMsgBody().put(readBuffer.array(), 0, remainingBytes);
-                        readBuffer.position(readBuffer.position() + remainingBytes);
+                        copyBytes(readBuffer, partialMessage.getMsgBody(), remainingBytes);
                         //readBuffer.get(partialMessage.getMsgBody().array(), partialMessage.getMsgBody().remaining(), partialMessage.getRemainingBytes());
                         partialMessage.getMsgBody().flip();
                         completeMessages.add(partialMessage);
@@ -433,11 +443,33 @@ public class RecceiverApplication implements CommandLineRunner {
             char msgId = readBuffer.getChar();
             int msgLen = readBuffer.getInt();
             System.out.println("processing message header for " + id + " " + String.format("%04x", (int) msgId) + " " + msgLen);
-            if (!"RC".equals(id)) {
+            if (!"RC".equals(id) || msgLen < 0) {
                 // invalid id... ignore
                 return null;
             }
             return new Message(id, msgId, msgLen);
+        }
+
+
+        /**
+         * Copy exactly {@code length} bytes from the source buffer's current position into the
+         * destination buffer, then advance the source position by the same amount.
+         *
+         * We use a slice here so we copy from the source buffer's current position rather than
+         * from index 0 of the backing array. That matters because the message header has already
+         * been consumed before body bytes are copied, and TCP reads may also contain partial or
+         * back-to-back messages in the same buffer.
+         *
+         * After the copy:
+         * - the destination buffer position is advanced by {@code length}
+         * - the source buffer position is also advanced by {@code length}
+         * - the source buffer limit is unchanged
+         */
+        private void copyBytes(ByteBuffer source, ByteBuffer destination, int length) {
+            ByteBuffer slice = source.slice();
+            slice.limit(length);
+            destination.put(slice);
+            source.position(source.position() + length);
         }
     }
 
