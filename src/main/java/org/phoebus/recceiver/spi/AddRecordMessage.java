@@ -1,4 +1,4 @@
-package org.phoebus.recceiver;
+package org.phoebus.recceiver.spi;
 
 public record AddRecordMessage(
         int recId,
@@ -9,3 +9,4 @@ public record AddRecordMessage(
         String recordName
 ) {
 }
+

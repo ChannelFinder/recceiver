@@ -25,6 +25,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
+import org.phoebus.recceiver.spi.RecSyncProcessorDispatcher;
+import org.phoebus.recceiver.spi.RecSyncProcessorRegistry;
 
 @Configuration
 @ComponentScan(basePackages = {"org.phoebus.recceiver"})

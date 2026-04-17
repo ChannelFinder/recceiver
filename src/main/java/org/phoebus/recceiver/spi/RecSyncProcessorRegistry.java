@@ -1,4 +1,4 @@
-package org.phoebus.recceiver;
+package org.phoebus.recceiver.spi;
 
 import java.util.ArrayList;
 import java.util.List;

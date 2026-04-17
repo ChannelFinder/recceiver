@@ -1,6 +1,9 @@
 package org.phoebus.recceiver;
 
 import org.junit.jupiter.api.Test;
+import org.phoebus.recceiver.spi.AddInfoMessage;
+import org.phoebus.recceiver.spi.AddRecordMessage;
+import org.phoebus.recceiver.spi.DelRecordMessage;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -77,4 +80,3 @@ class RecceiverMessageBodyParserTest {
         assertThrows(IllegalArgumentException.class, () -> RecceiverMessageBodyParser.parseAddRecord(body));
     }
 }
-
