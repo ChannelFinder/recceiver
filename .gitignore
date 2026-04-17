@@ -13,3 +13,7 @@
 
 ### Docker ###
 docker-compose-local*
+
+# Local living notes (kept out of git by design)
+docs/recceiver-connection-lifecycle.md
+

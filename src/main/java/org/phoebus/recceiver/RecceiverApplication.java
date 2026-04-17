@@ -23,7 +23,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -71,12 +70,9 @@ public class RecceiverApplication implements CommandLineRunner {
         closeLatch.await();
     }
 
-    ConcurrentHashMap<String, Processor> channelMap;
-
     @Override
     public void run(String... args) throws Exception {
         log.info("Starting running");
-        channelMap = new ConcurrentHashMap<>();
 
         Random rand = new Random();
         serverKey = rand.nextInt();
@@ -111,18 +107,6 @@ public class RecceiverApplication implements CommandLineRunner {
                     register(serverSocket);
                     log.info(selector + " " + serverSocket);
                 }
-                if (key.isReadable()) {
-                    SocketChannel client = (SocketChannel) key.channel();
-
-                    if (channelMap.containsKey(client.getRemoteAddress().toString())) {
-                        System.out.println("Reading from known remote address : " + client.getRemoteAddress().toString());
-                        channelMap.get(client.getRemoteAddress().toString()).process();
-                    } else {
-                        System.out.println("Reading from new remote address : " + client.getRemoteAddress().toString());
-                        channelMap.put(client.getRemoteAddress().toString(), new Processor(client, Math.max(1L, Math.round(tcptimeout))));
-                        channelMap.get(client.getRemoteAddress().toString()).process();
-                    }
-                }
                 iter.remove();
             }
         }
@@ -132,87 +116,6 @@ public class RecceiverApplication implements CommandLineRunner {
     public static final char SERVER_GREET_MSG_ID = 0x8001;
     public static final char PING_MSG_ID = 0x8002;
 
-    private void decodeMessage(SocketChannel client) throws IOException {
-        ByteBuffer readBuffer = ByteBuffer.allocate(1024);
-        client.read(readBuffer);
-        readBuffer.flip();
-
-        // Decode the header
-        byte[] idArray = new byte[2];
-        readBuffer.get(idArray, 0, 2);
-        //Charset charset = Charset.forName("US-ASCII");
-        //StandardCharsets.US_ASCII.decode()
-        String id = String.valueOf(StandardCharsets.US_ASCII.decode(ByteBuffer.wrap(idArray)).array());
-        char msgId = readBuffer.getChar();
-        int msgLen = readBuffer.getInt();
-
-        System.out.println("processing message " + id + " " + String.format("%04x", (int) msgId) + " " + msgLen);
-        if (!"RC".equals(id)) {
-            // invalid id... ignore
-            return;
-        }
-
-        switch (msgId) {
-            case 0x0001:
-                System.out.println("received 0001 " + readBuffer.remaining());
-                char clientGreet = readBuffer.getChar();
-                char clientGreetPadding = readBuffer.getChar();
-                int returnedKey = readBuffer.getInt();
-
-                // validate
-                if (returnedKey == serverKey) {
-                    // send the reply
-                    ByteBuffer serverReply = ByteBuffer.allocate(9);
-                    serverReply.put("RC".getBytes(StandardCharsets.US_ASCII));
-                    serverReply.putChar(SERVER_GREET_MSG_ID);
-                    serverReply.putInt(1);
-                    serverReply.put((byte) 0x00);
-                    serverReply.flip();
-                    client.write(serverReply);
-                    serverReply.clear();
-                } else {
-
-                }
-                break;
-            case 0x0002:
-                System.out.println("received 0002");
-                System.out.println(String.valueOf(StandardCharsets.US_ASCII.decode(readBuffer)));
-                break;
-            case 0x0003:
-                System.out.println("received 0003");
-                System.out.println(String.valueOf(StandardCharsets.US_ASCII.decode(readBuffer)));
-                break;
-            case 0x0004:
-                System.out.println("received 0004");
-                System.out.println(String.valueOf(StandardCharsets.US_ASCII.decode(readBuffer)));
-                break;
-            case 0x0005:
-                System.out.println("received 0005");
-                System.out.println(String.valueOf(StandardCharsets.US_ASCII.decode(readBuffer)));
-                break;
-            case 0x0006:
-                System.out.println("received 0006 - Add info " + readBuffer.remaining());
-                System.out.println(String.valueOf(StandardCharsets.US_ASCII.decode(readBuffer)));
-//				try {
-//					int recID = readBuffer.getInt();
-//					int keyLength = readBuffer.get();
-//					readBuffer.get();
-//					int valueLength = readBuffer.getChar();
-//					ByteBuffer keyBuffer = ByteBuffer.allocate(keyLength);
-//					ByteBuffer valueBuffer = ByteBuffer.allocate(valueLength);
-//					readBuffer.get(keyBuffer.array(),0,keyLength);
-//					String key = String.valueOf(StandardCharsets.US_ASCII.decode(keyBuffer));
-//					readBuffer.get(valueBuffer.array(),0,valueLength);
-//					String value = String.valueOf(StandardCharsets.US_ASCII.decode(valueBuffer));
-//					System.out.println("Add info : " + recID + " key: ("+keyLength+")"+key+" value: ("+valueLength+")" + value);
-//				} catch (Exception e) {
-//					System.out.println("failed to read info message because buffer size was 0");
-//				}
-//				readBuffer.clear();
-                break;
-        }
-
-    }
 
     private void register(ServerSocketChannel serverSocket)
             throws IOException {
