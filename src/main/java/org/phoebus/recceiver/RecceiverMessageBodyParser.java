@@ -3,12 +3,12 @@ package org.phoebus.recceiver;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
-public final class RecSyncMessageBodyParser {
+public final class RecceiverMessageBodyParser {
     private static final int ADD_RECORD_MIN_LENGTH = 9;
     private static final int DEL_RECORD_MIN_LENGTH = Integer.BYTES;
     private static final int ADD_INFO_MIN_LENGTH = 9;
 
-    private RecSyncMessageBodyParser() {
+    private RecceiverMessageBodyParser() {
     }
 
     public static AddRecordMessage parseAddRecord(ByteBuffer body) {

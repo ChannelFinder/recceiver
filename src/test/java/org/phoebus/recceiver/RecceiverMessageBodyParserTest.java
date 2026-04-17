@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-class RecSyncMessageBodyParserTest {
+class RecceiverMessageBodyParserTest {
 
     @Test
     void parseAddRecord() {
@@ -24,7 +24,7 @@ class RecSyncMessageBodyParserTest {
         body.put(recordName);
         body.flip();
 
-        AddRecordMessage message = RecSyncMessageBodyParser.parseAddRecord(body);
+        AddRecordMessage message = RecceiverMessageBodyParser.parseAddRecord(body);
 
         assertEquals(42, message.recId());
         assertEquals(0, message.aType());
@@ -38,7 +38,7 @@ class RecSyncMessageBodyParserTest {
         body.putInt(7);
         body.flip();
 
-        DelRecordMessage message = RecSyncMessageBodyParser.parseDelRecord(body);
+        DelRecordMessage message = RecceiverMessageBodyParser.parseDelRecord(body);
 
         assertEquals(7, message.recId());
     }
@@ -57,7 +57,7 @@ class RecSyncMessageBodyParserTest {
         body.put(value);
         body.flip();
 
-        AddInfoMessage message = RecSyncMessageBodyParser.parseAddInfo(body);
+        AddInfoMessage message = RecceiverMessageBodyParser.parseAddInfo(body);
 
         assertEquals(0, message.recId());
         assertEquals("host", message.key());
@@ -74,7 +74,7 @@ class RecSyncMessageBodyParserTest {
         body.put((byte) 'x');
         body.flip();
 
-        assertThrows(IllegalArgumentException.class, () -> RecSyncMessageBodyParser.parseAddRecord(body));
+        assertThrows(IllegalArgumentException.class, () -> RecceiverMessageBodyParser.parseAddRecord(body));
     }
 }
 

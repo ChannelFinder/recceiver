@@ -166,7 +166,7 @@ public class MessageProcessor {
                     case 0x0003:
                         System.out.println("received 0003");
                         try {
-                            AddRecordMessage addRecordMessage = RecSyncMessageBodyParser.parseAddRecord(message.msgBody);
+                            AddRecordMessage addRecordMessage = RecceiverMessageBodyParser.parseAddRecord(message.msgBody);
                             recordsToAdd.add(addRecordMessage);
                             System.out.println("Add record : " + addRecordMessage);
                         } catch (Exception e) {
@@ -175,7 +175,7 @@ public class MessageProcessor {
                         break;
                     case 0x0004:
                         try {
-                            DelRecordMessage delRecordMessage = RecSyncMessageBodyParser.parseDelRecord(message.msgBody);
+                            DelRecordMessage delRecordMessage = RecceiverMessageBodyParser.parseDelRecord(message.msgBody);
                             recordsToDelete.add(delRecordMessage);
                             System.out.println("received 0004 - DELETE " + delRecordMessage);
                         } catch (Exception e) {
@@ -191,7 +191,7 @@ public class MessageProcessor {
                     case 0x0006:
                         System.out.println("received 0006 - Add info " + message.msgBody.remaining());
                         try {
-                            AddInfoMessage addInfoMessage = RecSyncMessageBodyParser.parseAddInfo(message.msgBody);
+                            AddInfoMessage addInfoMessage = RecceiverMessageBodyParser.parseAddInfo(message.msgBody);
                             infoMessages.add(addInfoMessage);
                             if (addInfoMessage.recId() == 0) {
                                 clientInfos.put(addInfoMessage.key(), addInfoMessage.value());
