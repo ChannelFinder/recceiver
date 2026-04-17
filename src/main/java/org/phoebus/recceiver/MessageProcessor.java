@@ -154,24 +154,19 @@ public class MessageProcessor {
                     case 0x0003:
                         System.out.println("received 0003");
                         try {
-                            int recID = message.msgBody.getInt();
-                            int aType = message.msgBody.get();
-                            int rtLength = message.msgBody.get();
-                            int rnLength = message.msgBody.getChar();
-
-                            ByteBuffer recordTypeBuffer = ByteBuffer.allocate(rtLength);
-                            ByteBuffer recordNameBuffer = ByteBuffer.allocate(rnLength);
-                            message.msgBody.get(recordTypeBuffer.array(), 0, rtLength);
-                            String recordType = String.valueOf(StandardCharsets.US_ASCII.decode(recordTypeBuffer));
-                            message.msgBody.get(recordNameBuffer.array(), 0, rnLength);
-                            String recordName = String.valueOf(StandardCharsets.US_ASCII.decode(recordNameBuffer));
-                            System.out.println("Add record : " + recID + " recordType(" + rtLength + "): " + recordType + " value(" + rnLength + "): " + recordName);
+                            AddRecordMessage addRecordMessage = RecSyncMessageBodyParser.parseAddRecord(message.msgBody);
+                            System.out.println("Add record : " + addRecordMessage);
                         } catch (Exception e) {
                             System.out.println("failed to read " + e.getMessage());
                         }
                         break;
                     case 0x0004:
-                        System.out.println("received 0004 - DELETE" + String.valueOf(StandardCharsets.US_ASCII.decode(message.msgBody)));
+                        try {
+                            DelRecordMessage delRecordMessage = RecSyncMessageBodyParser.parseDelRecord(message.msgBody);
+                            System.out.println("received 0004 - DELETE " + delRecordMessage);
+                        } catch (Exception e) {
+                            System.out.println("failed to read delete message " + e.getMessage());
+                        }
                         break;
                     case 0x0005:
                         System.out.println("received 0005 - upload completed... start ping pong");
@@ -181,17 +176,8 @@ public class MessageProcessor {
                     case 0x0006:
                         System.out.println("received 0006 - Add info " + message.msgBody.remaining());
                         try {
-                            int recID = message.msgBody.getInt();
-                            int keyLength = message.msgBody.get();
-                            message.msgBody.get();
-                            int valueLength = message.msgBody.getChar();
-                            ByteBuffer keyBuffer = ByteBuffer.allocate(keyLength);
-                            ByteBuffer valueBuffer = ByteBuffer.allocate(valueLength);
-                            message.msgBody.get(keyBuffer.array(), 0, keyLength);
-                            String key = String.valueOf(StandardCharsets.US_ASCII.decode(keyBuffer));
-                            message.msgBody.get(valueBuffer.array(), 0, valueLength);
-                            String value = String.valueOf(StandardCharsets.US_ASCII.decode(valueBuffer));
-                            System.out.println("Add info : " + recID + " key: (" + keyLength + ")" + key + " value: (" + valueLength + ")" + value);
+                            AddInfoMessage addInfoMessage = RecSyncMessageBodyParser.parseAddInfo(message.msgBody);
+                            System.out.println("Add info : " + addInfoMessage);
                         } catch (Exception e) {
                             System.out.println("failed to read info message " + e.getMessage());
                         }
