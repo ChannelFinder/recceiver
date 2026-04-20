@@ -36,16 +36,43 @@ public class RecceiverApplication implements CommandLineRunner {
 
     private static final Logger log = Logger.getLogger(RecceiverApplication.class.getName());
 
-    @Value("${announceInterval:15.0}")
-    private double announceInterval;
+    /** Network address the TCP listener binds to (default 0.0.0.0 = all interfaces). */
+    @Value("${tcpBindAddress:0.0.0.0}")
+    private String tcpBindAddress;
+
+    /** TCP port to listen on (default 0 = OS-assigned ephemeral port). */
+    @Value("${tcpPort:0}")
+    private int tcpPort;
+
+    /** TCP idle timeout in seconds (default 15 s). A missed pong closes the connection. */
     @Value("${tcptimeout:15.0}")
     private double tcptimeout;
+
+    /** Size in bytes of the TCP read buffer per connection (default 4096, minimum 8). */
+    @Value("${readBufferSize:4096}")
+    private int readBufferSize;
+
+    /** Destination address for UDP beacon packets (default 255.255.255.255 limited broadcast). */
+    @Value("${udpBroadcastAddress:255.255.255.255}")
+    private String udpBroadcastAddress;
+
+    /** UDP port RecSync clients listen on for discovery beacons (default 5049). */
+    @Value("${udpBroadcastPort:5049}")
+    private int udpBroadcastPort;
+
+    /** Seconds between UDP beacon broadcasts (default 15 s). */
+    @Value("${announceInterval:15.0}")
+    private double announceInterval;
+
+    /** Seconds between automatic transaction commits (default 5 s). 0 = commit on every upload-complete. */
     @Value("${commitInterval:5.0}")
     private double commitInterval;
+
+    /** Max record changes before forcing an early commit (default 0 = unlimited). */
     @Value("${commitSizeLimit:0}")
     private int commitSizeLimit;
-    @Value("${maxActive:20}")
-    private int maxActive;
+
+
 
     private static ConfigurableApplicationContext context;
 
@@ -80,17 +107,17 @@ public class RecceiverApplication implements CommandLineRunner {
         Selector selector = Selector.open();
         // Create the TCP listener
         ServerSocketChannel serverSocket = ServerSocketChannel.open();
-        serverSocket.bind(new InetSocketAddress("localhost", 0));
+        serverSocket.bind(new InetSocketAddress(tcpBindAddress, tcpPort));
         serverSocket.configureBlocking(false);
         serverSocket.register(selector, SelectionKey.OP_ACCEPT);
 
         InetSocketAddress localAddress = (InetSocketAddress) serverSocket.getLocalAddress();
         int port = localAddress.getPort();
 
-        log.info("Listening on : " + port);
+        log.info("Listening on : " + tcpBindAddress + ":" + port);
 
-        RecceiverUDPAnnouncer announcer = new RecceiverUDPAnnouncer(serverKey, localAddress);
-        udpAnnouncerService.scheduleAtFixedRate(announcer, 0, 15, TimeUnit.SECONDS);
+        RecceiverUDPAnnouncer announcer = new RecceiverUDPAnnouncer(serverKey, localAddress, udpBroadcastAddress, udpBroadcastPort);
+        udpAnnouncerService.scheduleAtFixedRate(announcer, 0, Math.round(announceInterval), TimeUnit.SECONDS);
         log.info("started announcing...");
 
 
@@ -125,7 +152,7 @@ public class RecceiverApplication implements CommandLineRunner {
 
         // Run each client handler on its own virtual thread.
         Thread.ofVirtual().name("recceiver-client-", 0).start(() -> {
-            MessageProcessor p = new MessageProcessor(client, Math.max(1L, Math.round(tcptimeout)), serverKey, processorDispatcher);
+            MessageProcessor p = new MessageProcessor(client, Math.max(1L, Math.round(tcptimeout)), serverKey, processorDispatcher, readBufferSize);
             try {
                 while (client.isOpen() && client.isConnected()) {
                     p.process();

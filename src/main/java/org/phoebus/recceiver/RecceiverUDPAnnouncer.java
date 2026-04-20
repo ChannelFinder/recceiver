@@ -15,10 +15,16 @@ public class RecceiverUDPAnnouncer implements Runnable {
     final DatagramChannel client;
     final InetSocketAddress address;
     final int key;
+    /** Destination address for UDP beacon packets (e.g. 255.255.255.255 or a subnet broadcast). */
+    final String broadcastAddress;
+    /** UDP port RecSync clients listen on for discovery beacons. */
+    final int broadcastPort;
 
-    public RecceiverUDPAnnouncer(int key, InetSocketAddress address) throws IOException {
+    public RecceiverUDPAnnouncer(int key, InetSocketAddress address, String broadcastAddress, int broadcastPort) throws IOException {
         this.key = key;
         this.address = address;
+        this.broadcastAddress = broadcastAddress;
+        this.broadcastPort = broadcastPort;
         DatagramChannel datagramChannel = DatagramChannel.open();
         this.client = datagramChannel.bind(null);
     }
@@ -26,7 +32,7 @@ public class RecceiverUDPAnnouncer implements Runnable {
     @Override
     public void run() {
         this.client.isConnected();
-        InetSocketAddress serverAddress = new InetSocketAddress("255.255.255.255", 5049);
+        InetSocketAddress serverAddress = new InetSocketAddress(broadcastAddress, broadcastPort);
 
         try {
 

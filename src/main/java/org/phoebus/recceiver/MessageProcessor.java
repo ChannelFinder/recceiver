@@ -25,6 +25,8 @@ public class MessageProcessor {
     private final int serverKey;
     private final RecSyncProcessorDispatcher processorDispatcher;
     private final Random pingRandom = new Random();
+    /** Size in bytes of the read buffer allocated on each call to {@link #process()}. */
+    private final int readBufferSize;
 
     private boolean processingPartialMessage = false;
     private volatile Integer outstandingPingNonce;
@@ -41,16 +43,17 @@ public class MessageProcessor {
     Message partialMessage;
     ByteBuffer leftOver;
 
-    public MessageProcessor(SocketChannel channel, long pingIntervalSeconds, int serverKey, RecSyncProcessorDispatcher processorDispatcher) {
+    public MessageProcessor(SocketChannel channel, long pingIntervalSeconds, int serverKey, RecSyncProcessorDispatcher processorDispatcher, int readBufferSize) {
         this.channel = channel;
         this.pingIntervalSeconds = pingIntervalSeconds;
         this.serverKey = serverKey;
         this.processorDispatcher = processorDispatcher == null ? RecSyncProcessorDispatcher.empty() : processorDispatcher;
+        this.readBufferSize = Math.max(8, readBufferSize); // header is 8 bytes; enforce minimum
     }
 
     public void process() throws IOException {
         System.out.println("..................................");
-        ByteBuffer readBuffer = ByteBuffer.allocate(10);
+        ByteBuffer readBuffer = ByteBuffer.allocate(readBufferSize);
 
         if (leftOver != null) {
             System.out.println("copying leftover : " + leftOver.remaining() + " " + DatatypeConverter.printHexBinary(leftOver.array()));
