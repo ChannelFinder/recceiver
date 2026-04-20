@@ -24,6 +24,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.phoebus.recceiver.spi.RecSyncProcessorDispatcher;
 import org.phoebus.recceiver.spi.RecSyncProcessorRegistry;
@@ -128,11 +129,13 @@ public class RecceiverApplication implements CommandLineRunner {
             while (iter.hasNext()) {
 
                 SelectionKey key = iter.next();
-                System.out.println(key.isValid() + " " + key.channel());
+                if (log.isLoggable(Level.FINER)) {
+                    log.finer("selection key valid=" + key.isValid() + " channel=" + key.channel());
+                }
 
                 if (key.isAcceptable()) {
                     register(serverSocket);
-                    log.info(selector + " " + serverSocket);
+                    log.finer("accepted connection via selector=" + selector + " server=" + serverSocket);
                 }
                 iter.remove();
             }
@@ -161,9 +164,9 @@ public class RecceiverApplication implements CommandLineRunner {
                 try {
                     client.close();
                 } catch (IOException ex) {
-                    ex.printStackTrace();
+                    log.log(Level.WARNING, "Failed to close client channel", ex);
                 }
-                e.printStackTrace();
+                log.log(Level.WARNING, "Connection processing failed", e);
             } finally {
                 p.shutdown();
             }

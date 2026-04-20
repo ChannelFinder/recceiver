@@ -1,6 +1,5 @@
 package org.phoebus.recceiver;
 
-import javax.xml.bind.DatatypeConverter;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
@@ -18,8 +17,12 @@ import org.phoebus.recceiver.spi.RecSyncProcessorDispatcher;
 import org.phoebus.recceiver.spi.RecSyncTransaction;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class MessageProcessor {
+    private static final Logger log = Logger.getLogger(MessageProcessor.class.getName());
+
     private final SocketChannel channel;
     private final long pingIntervalSeconds;
     private final int serverKey;
@@ -52,32 +55,37 @@ public class MessageProcessor {
     }
 
     public void process() throws IOException {
-        System.out.println("..................................");
         ByteBuffer readBuffer = ByteBuffer.allocate(readBufferSize);
 
         if (leftOver != null) {
-            System.out.println("copying leftover : " + leftOver.remaining() + " " + DatatypeConverter.printHexBinary(leftOver.array()));
+            log.finer("copying leftover bytes=" + leftOver.remaining());
             leftOver.flip();
             readBuffer.put(leftOver);
             leftOver = null;
         }
         int bytesRead = channel.read(readBuffer);
-        System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()));
+        if (log.isLoggable(Level.FINER)) {
+            log.finer("read bytes=" + bytesRead + " from " + sourceAddress());
+        }
         readBuffer.flip();
-        System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()) + " " + readBuffer.remaining());
         if (bytesRead == -1) {
-            System.out.println("EOF detected - closing connection");
+            log.info("EOF detected - closing connection for " + sourceAddress());
             shutdown("eof");
             channel.close();
             return;
         }
         if (bytesRead == 0) {
-            System.out.println("No data available");
+            log.finer("No data available");
             return;
         }
 
         while (readBuffer.hasRemaining()) {
-            System.out.println("remaining buffer is " + readBuffer.position() + " " + readBuffer.limit() + " " + readBuffer.remaining() + " " + processingPartialMessage + " " + partialMessage);
+            if (log.isLoggable(Level.FINER)) {
+                log.finer("remaining buffer pos=" + readBuffer.position()
+                        + " limit=" + readBuffer.limit()
+                        + " remaining=" + readBuffer.remaining()
+                        + " partial=" + processingPartialMessage);
+            }
             // a brand new message
             if (!processingPartialMessage && readBuffer.remaining() >= 8) {
                 processingPartialMessage = true;
@@ -87,7 +95,7 @@ public class MessageProcessor {
                     partialMessage = null;
                     break;
                 }
-                System.out.println("Processing a new message... Buffer size pre processing " + readBuffer.remaining());
+                log.finer("Processing new message; body bytes available=" + readBuffer.remaining());
                 if (readBuffer.remaining() >= message.msgLen) {
                     copyBytes(readBuffer, message.getMsgBody(), message.msgLen);
                     message.getMsgBody().flip();
@@ -95,21 +103,21 @@ public class MessageProcessor {
                     completeMessages.add(message);
                     processingPartialMessage = false;
                 } else {
-                    System.out.println("PARTIAL message: " + readBuffer.remaining() + " available but need " + message.msgLen);
+                    log.finer("Partial message: available=" + readBuffer.remaining() + " need=" + message.msgLen);
                     if (readBuffer.remaining() > 0) {
                         try {
-                            System.out.println("before transfer : " + message.msgBody.remaining() + " : readbuffer " + readBuffer.remaining());
+                            log.finer("before transfer bodyRemaining=" + message.msgBody.remaining() + " readRemaining=" + readBuffer.remaining());
                             message.getMsgBody().put(readBuffer);
-                            System.out.println("after transfer : " + message.msgBody.remaining() + " : readbuffer " + readBuffer.remaining());
+                            log.finer("after transfer bodyRemaining=" + message.msgBody.remaining() + " readRemaining=" + readBuffer.remaining());
                         } catch (Exception e) {
-                            e.printStackTrace();
+                            log.log(Level.WARNING, "Failed while buffering partial message", e);
                         }
-                        System.out.println("PARTIAL message is moved still expecting " + message.getRemainingBytes());
+                        log.finer("Partial message buffered; still expecting=" + message.getRemainingBytes());
                     }
                     partialMessage = message;
                 }
             } else if (processingPartialMessage && readBuffer.hasRemaining()) {
-                System.out.println("Processing partial Message " + readBuffer.remaining() + " " + partialMessage.getRemainingBytes());
+                log.finer("Processing partial message available=" + readBuffer.remaining() + " need=" + partialMessage.getRemainingBytes());
                 if (readBuffer.remaining() >= partialMessage.getRemainingBytes()) {
                     int remainingBytes = partialMessage.getRemainingBytes();
                     copyBytes(readBuffer, partialMessage.getMsgBody(), remainingBytes);
@@ -121,24 +129,21 @@ public class MessageProcessor {
                     partialMessage.getMsgBody().put(readBuffer);
                 }
             } else {
-                System.out.println("Processing a new incomplete message... Buffer size pre processing " + readBuffer.position() + " " + readBuffer.remaining());
-                System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()));
+                log.finer("Incomplete header fragment buffered; remaining=" + readBuffer.remaining());
                 leftOver = ByteBuffer.allocate(readBuffer.remaining());
                 leftOver.put(readBuffer);
-                System.out.println("Processing a new incomplete message... Buffer size processing " + readBuffer.position() + " " + readBuffer.remaining());
-                System.out.println(DatatypeConverter.printHexBinary(readBuffer.array()));
                 break;
             }
 
-            System.out.println("complete message count: " + completeMessages.size());
+            log.finer("complete message count=" + completeMessages.size());
             // check for complete messages
             completeMessages.stream().forEach(message -> {
-                System.out.println("processing completed message " + message.id + " " + String.format("%04x", (int) message.msgId) + " " + message.msgLen);
+                log.finer("processing message id=" + String.format("%04x", (int) message.msgId) + " len=" + message.msgLen);
                 switch (message.msgId) {
                     case 0x0001:
-                        System.out.println("received 0001 " + message.msgBody.remaining());
-                        char clientGreet = message.msgBody.getChar();
-                        char clientGreetPadding = message.msgBody.getChar();
+                        log.finer("received 0x0001 bodyRemaining=" + message.msgBody.remaining());
+                        message.msgBody.getChar();
+                        message.msgBody.getChar();
                         int returnedKey = message.msgBody.getInt();
 
                         // validate
@@ -153,59 +158,61 @@ public class MessageProcessor {
                             try {
                                 channel.write(serverReply);
                             } catch (IOException e) {
-                                e.printStackTrace();
+                                log.log(Level.WARNING, "Failed to send server greet", e);
                             }
                             serverReply.clear();
                         }
                         break;
                     case 0x0002:
-                        System.out.println("received 0002");
+                        log.finer("received 0x0002 (pong)");
                         if (message.msgBody.remaining() >= Integer.BYTES) {
                             int nonce = message.msgBody.getInt();
                             if (outstandingPingNonce != null && outstandingPingNonce == nonce) {
-                                System.out.println("received matching pong for nonce " + nonce);
+                                log.finer("received matching pong for nonce " + nonce);
                                 outstandingPingNonce = null;
                             } else {
-                                System.out.println("received unexpected pong nonce " + nonce);
+                                log.fine("received unexpected pong nonce " + nonce);
                             }
                         }
                         break;
                     case 0x0003:
-                        System.out.println("received 0003");
+                        log.finer("received 0x0003 (add record)");
                         try {
                             AddRecordMessage addRecordMessage = RecceiverMessageBodyParser.parseAddRecord(message.msgBody);
                             recordsToAdd.add(addRecordMessage);
-                            System.out.println("Add record : " + addRecordMessage);
+                            log.fine("Add record: " + addRecordMessage);
                         } catch (Exception e) {
-                            System.out.println("failed to read " + e.getMessage());
+                            log.log(Level.WARNING, "Failed to parse add record message", e);
                         }
                         break;
                     case 0x0004:
                         try {
                             DelRecordMessage delRecordMessage = RecceiverMessageBodyParser.parseDelRecord(message.msgBody);
                             recordsToDelete.add(delRecordMessage);
-                            System.out.println("received 0004 - DELETE " + delRecordMessage);
+                            log.fine("Delete record: " + delRecordMessage);
                         } catch (Exception e) {
-                            System.out.println("failed to read delete message " + e.getMessage());
+                            log.log(Level.WARNING, "Failed to parse delete message", e);
                         }
                         break;
                     case 0x0005:
-                        System.out.println("received 0005 - upload completed... start ping pong");
-                        System.out.println(String.valueOf(StandardCharsets.US_ASCII.decode(message.msgBody)));
+                        log.info("received 0x0005 - upload completed, starting ping/pong");
+                        if (log.isLoggable(Level.FINER)) {
+                            log.finer("upload done payload=" + String.valueOf(StandardCharsets.US_ASCII.decode(message.msgBody)));
+                        }
                         dispatchTransaction();
                         startPingLoop();
                         break;
                     case 0x0006:
-                        System.out.println("received 0006 - Add info " + message.msgBody.remaining());
+                        log.finer("received 0x0006 (add info) bytes=" + message.msgBody.remaining());
                         try {
                             AddInfoMessage addInfoMessage = RecceiverMessageBodyParser.parseAddInfo(message.msgBody);
                             infoMessages.add(addInfoMessage);
                             if (addInfoMessage.recId() == 0) {
                                 clientInfos.put(addInfoMessage.key(), addInfoMessage.value());
                             }
-                            System.out.println("Add info : " + addInfoMessage);
+                            log.fine("Add info: " + addInfoMessage);
                         } catch (Exception e) {
-                            System.out.println("failed to read info message " + e.getMessage());
+                            log.log(Level.WARNING, "Failed to parse info message", e);
                         }
                         break;
                 }
@@ -222,9 +229,10 @@ public class MessageProcessor {
         String id = String.valueOf(StandardCharsets.US_ASCII.decode(ByteBuffer.wrap(idArray)).array());
         char msgId = readBuffer.getChar();
         int msgLen = readBuffer.getInt();
-        System.out.println("processing message header for " + id + " " + String.format("%04x", (int) msgId) + " " + msgLen);
+        log.finer("processing header id=" + id + " msgId=" + String.format("%04x", (int) msgId) + " len=" + msgLen);
         if (!"RC".equals(id) || msgLen < 0) {
             // invalid id... ignore
+            log.fine("Ignoring invalid header id=" + id + " len=" + msgLen);
             return null;
         }
         return new Message(id, msgId, msgLen);
@@ -249,7 +257,7 @@ public class MessageProcessor {
                     try {
                         channel.close();
                     } catch (IOException ex) {
-                        ex.printStackTrace();
+                        log.log(Level.WARNING, "Failed to close channel after ping loop error", ex);
                     }
                     break;
                 }
@@ -264,7 +272,7 @@ public class MessageProcessor {
         }
 
         if (outstandingPingNonce != null) {
-            System.out.println("closing channel due to missed pong for nonce " + outstandingPingNonce);
+            log.info("closing channel due to missed pong for nonce " + outstandingPingNonce);
             shutdown("missed pong");
             channel.close();
             return;
@@ -280,7 +288,7 @@ public class MessageProcessor {
 
         channel.write(pingMessage);
         outstandingPingNonce = nonce;
-        System.out.println("sent ping with nonce " + nonce);
+        log.fine("sent ping with nonce " + nonce);
     }
 
     /**

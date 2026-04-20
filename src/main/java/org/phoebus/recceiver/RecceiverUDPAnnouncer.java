@@ -48,7 +48,7 @@ public class RecceiverUDPAnnouncer implements Runnable {
             announcerMsgBuffer.put((byte) 0);
             announcerMsgBuffer.putInt(key);
             announcerMsgBuffer.flip();
-            udpLogger.info("sending out announcement at : " + Instant.now());
+            udpLogger.fine("sending out announcement at: " + Instant.now());
             client.send(announcerMsgBuffer, serverAddress);
         } catch (IOException e) {
             udpLogger.log(Level.SEVERE, e.getMessage(), e);
