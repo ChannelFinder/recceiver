@@ -1,5 +1,7 @@
 package org.phoebus.recceiver.spi;
 
+import java.util.List;
+import java.util.Map;
 import java.util.logging.Logger;
 
 public class LogRecSyncProcessor implements RecSyncProcessor {
@@ -10,24 +12,29 @@ public class LogRecSyncProcessor implements RecSyncProcessor {
         log.info("[LogRecSyncProcessor] commit from " + transaction.sourceAddress());
         log.info("[LogRecSyncProcessor] recordsToAdd=" + transaction.recordsToAdd().size()
                 + ", recordsToDelete=" + transaction.recordsToDelete().size()
-                + ", infoMessages=" + transaction.infoMessages().size()
+                + ", recordInfosToAdd=" + transaction.recordInfosToAdd().size()
+                + ", aliases=" + transaction.aliases().size()
                 + ", clientInfos=" + transaction.clientInfos().size());
 
-        for (AddRecordMessage add : transaction.recordsToAdd()) {
+        for (AddRecordMessage add : transaction.recordsToAdd().values()) {
             log.info("[LogRecSyncProcessor] ADD recId=" + add.recId()
                     + " aType=" + add.aType()
                     + " recordType='" + add.recordType() + "'"
                     + " recordName='" + add.recordName() + "'");
         }
 
-        for (DelRecordMessage del : transaction.recordsToDelete()) {
-            log.info("[LogRecSyncProcessor] DEL recId=" + del.recId());
+        for (Integer recId : transaction.recordsToDelete()) {
+            log.info("[LogRecSyncProcessor] DEL recId=" + recId);
         }
 
-        for (AddInfoMessage info : transaction.infoMessages()) {
-            log.info("[LogRecSyncProcessor] INFO recId=" + info.recId()
-                    + " key='" + info.key() + "'"
-                    + " value='" + info.value() + "'");
+        for (Map.Entry<Integer, Map<String, String>> recInfoEntry : transaction.recordInfosToAdd().entrySet()) {
+            log.info("[LogRecSyncProcessor] INFO recId=" + recInfoEntry.getKey()
+                    + " values=" + recInfoEntry.getValue());
+        }
+
+        for (Map.Entry<Integer, List<String>> aliasEntry : transaction.aliases().entrySet()) {
+            log.info("[LogRecSyncProcessor] ALIAS recId=" + aliasEntry.getKey()
+                    + " aliases=" + aliasEntry.getValue());
         }
 
         if (!transaction.clientInfos().isEmpty()) {

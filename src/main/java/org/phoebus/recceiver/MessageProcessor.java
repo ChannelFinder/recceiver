@@ -35,6 +35,7 @@ public class MessageProcessor {
     private volatile Integer outstandingPingNonce;
     private volatile boolean pingLoopStarted = false;
     private volatile boolean connectionClosedNotified = false;
+    private boolean initialCommitPending = true;
     private Thread pingThread;
 
     private final List<AddRecordMessage> recordsToAdd = new ArrayList<>();
@@ -332,8 +333,11 @@ public class MessageProcessor {
                 List.copyOf(recordsToAdd),
                 List.copyOf(recordsToDelete),
                 List.copyOf(infoMessages),
-                Map.copyOf(clientInfos));
+                Map.copyOf(clientInfos),
+                initialCommitPending,
+                true);
         processorDispatcher.dispatchCommit(transaction);
+        initialCommitPending = false;
         recordsToAdd.clear();
         recordsToDelete.clear();
         infoMessages.clear();
