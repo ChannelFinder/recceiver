@@ -1,4 +1,4 @@
-package org.phoebus.recceiver.spi.cf;
+package org.phoebus.recceiver.spi;
 
 import org.phoebus.recceiver.spi.AddRecordMessage;
 import org.phoebus.recceiver.spi.ConnectionClosedEvent;

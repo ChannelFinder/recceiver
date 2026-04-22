@@ -5,7 +5,7 @@ import org.phoebus.recceiver.spi.AddRecordMessage;
 import org.phoebus.recceiver.spi.ConnectionClosedEvent;
 import org.phoebus.recceiver.spi.DelRecordMessage;
 import org.phoebus.recceiver.spi.RecSyncTransaction;
-import org.phoebus.recceiver.spi.cf.InMemoryRecSyncProcessor;
+import org.phoebus.recceiver.spi.InMemoryRecSyncProcessor;
 import java.util.List;
 import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
