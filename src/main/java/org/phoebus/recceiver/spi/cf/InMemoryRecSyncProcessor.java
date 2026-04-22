@@ -5,12 +5,9 @@ import org.phoebus.recceiver.spi.ConnectionClosedEvent;
 import org.phoebus.recceiver.spi.RecSyncProcessor;
 import org.phoebus.recceiver.spi.RecSyncTransaction;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.logging.Logger;
 
 /**
@@ -33,8 +30,8 @@ public class InMemoryRecSyncProcessor implements RecSyncProcessor {
 
     private static final String DEFAULT_OWNER = "cfstore";
 
-    // channel name -> IOC ids currently serving it
-    private final Map<String, Set<String>> channelIndex = new LinkedHashMap<>();
+    // channel name -> IOC id currently serving it (each channel can only be served by one IOC)
+    private final Map<String, String> channelIndex = new LinkedHashMap<>();
     // IOC id -> state
     private final Map<String, IocState> iocs = new LinkedHashMap<>();
 
@@ -127,41 +124,35 @@ public class InMemoryRecSyncProcessor implements RecSyncProcessor {
         return Map.copyOf(counts);
     }
 
-    public synchronized Map<String, Set<String>> channelIndexView() {
-        Map<String, Set<String>> copy = new LinkedHashMap<>();
-        for (Map.Entry<String, Set<String>> entry : channelIndex.entrySet()) {
-            copy.put(entry.getKey(), Set.copyOf(entry.getValue()));
-        }
-        return Map.copyOf(copy);
+    public synchronized Map<String, String> channelIndexView() {
+        return Map.copyOf(channelIndex);
     }
 
     private void addChannel(String channelName, String iocId) {
-        Set<String> iocIds = channelIndex.computeIfAbsent(channelName, ignored -> new LinkedHashSet<>());
-        if (iocIds.add(iocId)) {
-            IocState state = iocs.get(iocId);
-            if (state != null) {
-                state.channelCount++;
-            }
+        String currentOwner = channelIndex.get(channelName);
+        if (currentOwner != null && !currentOwner.equals(iocId)) {
+            // Channel is currently served by a different IOC; remove it from the old one first
+            removeChannel(channelName, currentOwner);
+        }
+        channelIndex.put(channelName, iocId);
+        IocState state = iocs.get(iocId);
+        if (state != null) {
+            state.channelCount++;
         }
     }
 
     private void removeChannel(String channelName, String iocId) {
-        Set<String> iocIds = channelIndex.get(channelName);
-        if (iocIds == null) {
+        String currentOwner = channelIndex.get(channelName);
+        if (currentOwner == null || !currentOwner.equals(iocId)) {
             return;
         }
-
-        if (iocIds.remove(iocId)) {
-            IocState state = iocs.get(iocId);
-            if (state != null && state.channelCount > 0) {
-                state.channelCount--;
-            }
-        }
-
-        if (iocIds.isEmpty()) {
-            channelIndex.remove(channelName);
+        channelIndex.remove(channelName);
+        IocState state = iocs.get(iocId);
+        if (state != null && state.channelCount > 0) {
+            state.channelCount--;
         }
     }
+
 
     private void disconnectIoc(String iocId, String reason) {
         IocState ioc = iocs.remove(iocId);
