@@ -13,13 +13,14 @@ public final class RecSyncProcessorRegistry {
     private RecSyncProcessorRegistry() {
     }
 
-    public static RecSyncProcessorDispatcher loadDispatcher() {
+    public static RecSyncProcessorDispatcher loadDispatcher(Map<String, String> options) {
         List<RecSyncProcessor> processors = new ArrayList<>();
+        Map<String, String> initOptions = options == null ? Map.of() : Map.copyOf(options);
 
         ServiceLoader<RecSyncProcessor> directLoader = ServiceLoader.load(RecSyncProcessor.class);
         for (RecSyncProcessor processor : directLoader) {
             try {
-                RecSyncProcessor initializedProcessor = processor.init(processor.name(), Map.of());
+                RecSyncProcessor initializedProcessor = processor.init(processor.name(), initOptions);
                 if (initializedProcessor != null) {
                     processors.add(initializedProcessor);
                     log.info("Loaded RecSyncProcessor via SPI: " + initializedProcessor.getClass().getName());
@@ -33,4 +34,3 @@ public final class RecSyncProcessorRegistry {
         return new RecSyncProcessorDispatcher(processors);
     }
 }
-

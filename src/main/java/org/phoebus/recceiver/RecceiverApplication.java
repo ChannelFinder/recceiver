@@ -18,6 +18,8 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -73,6 +75,18 @@ public class RecceiverApplication implements CommandLineRunner {
     @Value("${commitSizeLimit:0}")
     private int commitSizeLimit;
 
+    @Value("${recceiver.cf.enabled:false}")
+    private String cfEnabled;
+
+    @Value("${recceiver.cf.service-url:}")
+    private String cfServiceUrl;
+
+    @Value("${recceiver.cf.username:}")
+    private String cfUsername;
+
+    @Value("${recceiver.cf.password:}")
+    private String cfPassword;
+
 
 
     private static ConfigurableApplicationContext context;
@@ -100,7 +114,7 @@ public class RecceiverApplication implements CommandLineRunner {
     @Override
     public void run(String... args) throws Exception {
         log.info("Starting running");
-        processorDispatcher = RecSyncProcessorRegistry.loadDispatcher();
+        processorDispatcher = RecSyncProcessorRegistry.loadDispatcher(buildProcessorOptions());
 
         Random rand = new Random();
         serverKey = rand.nextInt();
@@ -172,6 +186,15 @@ public class RecceiverApplication implements CommandLineRunner {
             }
 
         });
+    }
+
+    private Map<String, String> buildProcessorOptions() {
+        Map<String, String> options = new LinkedHashMap<>();
+        options.put("recceiver.cf.enabled", cfEnabled);
+        options.put("recceiver.cf.service-url", cfServiceUrl);
+        options.put("recceiver.cf.username", cfUsername);
+        options.put("recceiver.cf.password", cfPassword);
+        return options;
     }
 
     @Bean

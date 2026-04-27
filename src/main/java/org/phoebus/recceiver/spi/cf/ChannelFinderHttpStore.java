@@ -41,7 +41,7 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
     ChannelFinderHttpStore(HttpClient httpClient, ObjectMapper objectMapper, URI serviceUri, String authorizationHeader) {
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
-        this.serviceUri = Objects.requireNonNull(serviceUri, "serviceUri");
+        this.serviceUri = normalizeBaseUri(Objects.requireNonNull(serviceUri, "serviceUri"));
         this.authorizationHeader = authorizationHeader;
     }
 
@@ -59,12 +59,17 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
 
     @Override
     public void updateChannels(Collection<ChannelFinderChannel> channels) {
-        for (ChannelFinderChannel channel : channels) {
-            HttpRequest request = requestBuilder(channelUri(channel.name()))
-                    .PUT(jsonBody(toPayload(channel)))
-                    .build();
-            sendExpectingSuccess(request, "save channel " + channel.name());
+        if (channels.isEmpty()) {
+            return;
         }
+        List<CFChannel> payload = new ArrayList<>();
+        for (ChannelFinderChannel channel : channels) {
+            payload.add(toPayload(channel));
+        }
+        HttpRequest request = requestBuilder(channelsUri())
+                .POST(jsonBody(payload))
+                .build();
+        sendExpectingSuccess(request, "update channels");
     }
 
     @Override
@@ -150,10 +155,21 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
         return serviceUri.resolve("resources/channels/" + encodePathSegment(channelName));
     }
 
+    private URI channelsUri() {
+        return serviceUri.resolve("resources/channels");
+    }
+
     private URI propertyUri(String propertyName) {
         return serviceUri.resolve("resources/properties/" + encodePathSegment(propertyName));
     }
 
+    private static URI normalizeBaseUri(URI serviceUri) {
+        String value = serviceUri.toString();
+        if (!value.endsWith("/")) {
+            value += "/";
+        }
+        return URI.create(value);
+    }
 
     private static String encodePathSegment(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
