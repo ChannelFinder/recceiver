@@ -113,7 +113,7 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
     public void ensureProperties(Set<String> propertyNames, String owner) {
         for (String propertyName : propertyNames) {
             HttpRequest request = requestBuilder(propertyUri(propertyName))
-                    .PUT(jsonBody(Map.of(
+                    .POST(jsonBody(Map.of(
                             "name", propertyName,
                             "owner", owner
                     )))
