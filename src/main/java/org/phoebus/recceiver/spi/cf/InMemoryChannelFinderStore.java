@@ -21,6 +21,18 @@ public class InMemoryChannelFinderStore implements ChannelFinderStore {
     }
 
     @Override
+    public synchronized Map<String, ChannelFinderChannel> findByProperty(String propertyName, String propertyValue) {
+        Map<String, ChannelFinderChannel> found = new LinkedHashMap<>();
+        for (Map.Entry<String, ChannelFinderChannel> entry : channelStore.entrySet()) {
+            String value = entry.getValue().property(propertyName);
+            if (propertyValue.equals(value)) {
+                found.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return Map.copyOf(found);
+    }
+
+    @Override
     public synchronized void updateChannels(Collection<ChannelFinderChannel> channels) {
         for (ChannelFinderChannel channel : channels) {
             channelStore.put(channel.name(), channel);

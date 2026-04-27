@@ -7,6 +7,8 @@ import java.util.Set;
 public interface ChannelFinderStore {
     Map<String, ChannelFinderChannel> findByNames(Set<String> channelNames);
 
+    Map<String, ChannelFinderChannel> findByProperty(String propertyName, String propertyValue);
+
     void updateChannels(Collection<ChannelFinderChannel> channels);
 
     void deleteChannels(Collection<String> channelNames);
@@ -15,4 +17,3 @@ public interface ChannelFinderStore {
         // Optional capability for stores backed by real ChannelFinder services.
     }
 }
-
