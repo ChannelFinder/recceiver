@@ -189,8 +189,8 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
     }
 
     private URI channelsByPropertyUri(String propertyName, String propertyValue) {
-        String query = "resources/channels?property=" + encodePathSegment(propertyName)
-                + "&value=" + encodePathSegment(propertyValue);
+        String query = "resources/channels?" + encodePathSegment(propertyName)
+                + "=" + encodePathSegment(propertyValue);
         return serviceUri.resolve(query);
     }
 
