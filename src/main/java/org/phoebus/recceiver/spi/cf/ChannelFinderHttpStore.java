@@ -2,6 +2,7 @@ package org.phoebus.recceiver.spi.cf;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -55,6 +56,34 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
             }
         }
         return Map.copyOf(found);
+    }
+
+    @Override
+    public Map<String, ChannelFinderChannel> findByProperty(String propertyName, String propertyValue) {
+        HttpRequest request = requestBuilder(channelsByPropertyUri(propertyName, propertyValue)).GET().build();
+        HttpResponse<String> response = send(request, "find channels by property " + propertyName);
+        int status = response.statusCode();
+        if (status == 404) {
+            return Map.of();
+        }
+        if (status < 200 || status >= 300) {
+            throw new IllegalStateException("ChannelFinder request failed while finding channels by property '"
+                    + propertyName + "' with status " + status + ": " + response.body());
+        }
+        try {
+            List<CFChannel> payloads = objectMapper.readValue(response.body(), new TypeReference<>() {
+            });
+            Map<String, ChannelFinderChannel> found = new LinkedHashMap<>();
+            for (CFChannel payload : payloads) {
+                if (payload != null && payload.name != null) {
+                    found.put(payload.name, fromPayload(payload));
+                }
+            }
+            return Map.copyOf(found);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to decode ChannelFinder channel response for property '"
+                    + propertyName + "'", e);
+        }
     }
 
     @Override
@@ -157,6 +186,12 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
 
     private URI channelsUri() {
         return serviceUri.resolve("resources/channels");
+    }
+
+    private URI channelsByPropertyUri(String propertyName, String propertyValue) {
+        String query = "resources/channels?property=" + encodePathSegment(propertyName)
+                + "&value=" + encodePathSegment(propertyValue);
+        return serviceUri.resolve(query);
     }
 
     private URI propertyUri(String propertyName) {
