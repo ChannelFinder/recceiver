@@ -201,7 +201,11 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
                 properties.put(property.name, property.value);
             }
         }
-        return new ChannelFinderChannel(payload.name, payload.owner == null ? ChannelFinderCache.DEFAULT_OWNER : payload.owner, properties);
+        return new ChannelFinderChannel(
+                payload.name,
+                payload.owner == null ? CFRecSyncProcessor.DEFAULT_OWNER : payload.owner,
+                properties
+        );
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

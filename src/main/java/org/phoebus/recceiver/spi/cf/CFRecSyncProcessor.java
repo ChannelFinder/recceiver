@@ -5,14 +5,18 @@ import org.phoebus.recceiver.spi.ConnectionClosedEvent;
 import org.phoebus.recceiver.spi.RecSyncProcessor;
 import org.phoebus.recceiver.spi.RecSyncTransaction;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Logger;
 
 /**
- *
  * Publishes primary record adds to ChannelFinder.
  */
 public class CFRecSyncProcessor implements RecSyncProcessor {
@@ -22,9 +26,50 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final String USERNAME_KEY = "recceiver.cf.username";
     private static final String PASSWORD_KEY = "recceiver.cf.password";
 
+    // Inbound keys read from RecSync transaction client info / environment fields.
+    // These names match protocol/env key spellings.
+    public static final String IOCNAME_KEY = "IOCNAME";
+    public static final String HOSTNAME_KEY = "HOSTNAME";
+    public static final String ENGINEER_KEY = "ENGINEER";
+    public static final String CF_USERNAME_KEY = "CF_USERNAME";
+    public static final String CA_PORT_ENV_KEY = "RSRV_SERVER_PORT";
+    public static final String PVA_PORT_ENV_KEY = "PVAS_SERVER_PORT";
+
+    // ChannelFinder persisted property names written into channel documents.
+    // These values follow ChannelFinder property names,
+    // (for example: iocid, iocName, hostName).
+    public static final String HOST_NAME_PROPERTY = "hostName";
+    public static final String IOC_NAME_PROPERTY = "iocName";
+    public static final String IOC_ID_PROPERTY = "iocid";
+    public static final String IOC_IP_PROPERTY = "iocIP";
+    public static final String PV_STATUS_PROPERTY = "pvStatus";
+    public static final String TIME_PROPERTY = "time";
+    public static final String RECCEIVER_ID_PROPERTY = "recceiverID";
+    public static final String RECORD_TYPE_PROPERTY = "recordType";
+    public static final String CA_PORT_PROPERTY = "caPort";
+    public static final String PVA_PORT_PROPERTY = "pvaPort";
+    public static final String ACTIVE = "Active";
+    public static final String DEFAULT_OWNER = "cfstore";
+
+    private static final String RECCEIVER_ID = resolveRecceiverId();
+
+    private static final Set<String> REQUIRED_PROPERTIES = Set.copyOf(new LinkedHashSet<>(Set.of(
+            HOST_NAME_PROPERTY,
+            IOC_NAME_PROPERTY,
+            PV_STATUS_PROPERTY,
+            TIME_PROPERTY,
+            IOC_ID_PROPERTY,
+            IOC_IP_PROPERTY,
+            RECCEIVER_ID_PROPERTY,
+            RECORD_TYPE_PROPERTY,
+            CA_PORT_PROPERTY,
+            PVA_PORT_PROPERTY
+    )));
+
     private ChannelFinderStore store;
 
     public CFRecSyncProcessor() {
+        // Required by ServiceLoader.
     }
 
     @Override
@@ -44,11 +89,16 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
                     "recceiver.cf.username and recceiver.cf.password must both be configured when authentication is used");
         }
 
-        ChannelFinderStore store = username == null
+        this.store = createStore(serviceUrl, username, password);
+        String propertyOwner = username == null ? DEFAULT_OWNER : username;
+        this.store.ensureProperties(REQUIRED_PROPERTIES, propertyOwner);
+        return this;
+    }
+
+    protected ChannelFinderStore createStore(String serviceUrl, String username, String password) {
+        return username == null
                 ? new ChannelFinderHttpStore(serviceUrl)
                 : new ChannelFinderHttpStore(serviceUrl, username, password);
-        this.store = store;
-        return this;
     }
 
     @Override
@@ -70,24 +120,127 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
 
     private Collection<ChannelFinderChannel> buildChannels(RecSyncTransaction transaction) {
         Collection<ChannelFinderChannel> channels = new ArrayList<>();
-        String owner = transaction.sourceHost() != null ? transaction.sourceHost() : transaction.sourceAddress();
+        Map<String, String> clientInfos = transaction.clientInfos();
+        String owner = resolveOwner(clientInfos);
+        String hostName = resolveHostName(transaction, clientInfos);
+        String iocName = resolveIocName(transaction, clientInfos);
+        String iocId = resolveIocId(transaction);
+        String iocIp = resolveIocIp(transaction);
+        String timestamp = OffsetDateTime.now().toString();
+        String caPort = normalized(clientInfos.get(CA_PORT_ENV_KEY));
+        String pvaPort = normalized(clientInfos.get(PVA_PORT_ENV_KEY));
 
         for (AddRecordMessage addRecord : transaction.recordsToAdd().values()) {
             if (addRecord.aType() != 0) {
                 continue;
             }
-            Map<String, String> properties = new LinkedHashMap<>();
-            properties.put(ChannelFinderCache.IOC_ID_PROPERTY, transaction.sourceAddress());
+            Map<String, String> properties = buildStandardProperties(
+                    addRecord,
+                    hostName,
+                    iocName,
+                    iocId,
+                    iocIp,
+                    timestamp,
+                    caPort,
+                    pvaPort
+            );
             channels.add(new ChannelFinderChannel(addRecord.recordName(), owner, properties));
         }
 
         return channels;
     }
 
+    private static String resolveHostName(RecSyncTransaction transaction, Map<String, String> clientInfos) {
+        String hostName = normalized(clientInfos.get(HOSTNAME_KEY));
+        return hostName != null ? hostName : fallbackSourceHost(transaction);
+    }
+
+    private static String resolveIocName(RecSyncTransaction transaction, Map<String, String> clientInfos) {
+        String iocName = normalized(clientInfos.get(IOCNAME_KEY));
+        if (iocName != null) {
+            return iocName;
+        }
+        return transaction.sourcePort() != null ? String.valueOf(transaction.sourcePort()) : transaction.sourceAddress();
+    }
+
+    private static String resolveIocId(RecSyncTransaction transaction) {
+        return transaction.sourceHost() != null && transaction.sourcePort() != null
+                ? transaction.sourceHost() + ":" + transaction.sourcePort()
+                : transaction.sourceAddress();
+    }
+
+    private static String resolveIocIp(RecSyncTransaction transaction) {
+        return fallbackSourceHost(transaction);
+    }
+
+    private static String fallbackSourceHost(RecSyncTransaction transaction) {
+        return transaction.sourceHost() != null ? transaction.sourceHost() : transaction.sourceAddress();
+    }
+
+    private static Map<String, String> buildStandardProperties(
+            AddRecordMessage addRecord,
+            String hostName,
+            String iocName,
+            String iocId,
+            String iocIp,
+            String timestamp,
+            String caPort,
+            String pvaPort
+    ) {
+        Map<String, String> properties = new LinkedHashMap<>();
+        properties.put(HOST_NAME_PROPERTY, hostName);
+        properties.put(IOC_NAME_PROPERTY, iocName);
+        properties.put(PV_STATUS_PROPERTY, ACTIVE);
+        properties.put(TIME_PROPERTY, timestamp);
+        properties.put(IOC_ID_PROPERTY, iocId);
+        properties.put(IOC_IP_PROPERTY, iocIp);
+        properties.put(RECCEIVER_ID_PROPERTY, RECCEIVER_ID);
+        properties.put(RECORD_TYPE_PROPERTY, addRecord.recordType());
+        if (caPort != null) {
+            properties.put(CA_PORT_PROPERTY, caPort);
+        }
+        if (pvaPort != null) {
+            properties.put(PVA_PORT_PROPERTY, pvaPort);
+        }
+        return properties;
+    }
+
     @Override
     public void connectionClosed(ConnectionClosedEvent event) {
         log.info(() -> "[CFRecSyncProcessor] connectionClosed source=" + event.sourceAddress()
                 + " reason='" + event.reason() + "'");
+    }
+
+    private static String resolveOwner(Map<String, String> clientInfos) {
+        String engineer = normalized(clientInfos.get(ENGINEER_KEY));
+        if (engineer != null) {
+            return engineer;
+        }
+        String cfUsername = normalized(clientInfos.get(CF_USERNAME_KEY));
+        if (cfUsername != null) {
+            return cfUsername;
+        }
+        return DEFAULT_OWNER;
+    }
+
+    private static String resolveRecceiverId() {
+        String fromHostName = normalized(System.getenv(HOSTNAME_KEY));
+        if (fromHostName != null) {
+            return fromHostName;
+        }
+        String fromComputerName = normalized(System.getenv("COMPUTERNAME"));
+        if (fromComputerName != null) {
+            return fromComputerName;
+        }
+        try {
+            String localHost = normalized(InetAddress.getLocalHost().getHostName());
+            if (localHost != null) {
+                return localHost;
+            }
+        } catch (UnknownHostException ignored) {
+            // Fall back to the default owner when the local host name cannot be resolved.
+        }
+        return DEFAULT_OWNER;
     }
 
     private static String normalized(String value) {
