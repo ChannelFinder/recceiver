@@ -19,10 +19,10 @@ public final class RecSyncProcessorRegistry {
         ServiceLoader<RecSyncProcessor> directLoader = ServiceLoader.load(RecSyncProcessor.class);
         for (RecSyncProcessor processor : directLoader) {
             try {
-                RecSyncProcessor builtProcessor = processor.build(processor.name(), Map.of());
-                if (builtProcessor != null) {
-                    processors.add(builtProcessor);
-                    log.info("Loaded RecSyncProcessor via SPI: " + builtProcessor.getClass().getName());
+                RecSyncProcessor initializedProcessor = processor.init(processor.name(), Map.of());
+                if (initializedProcessor != null) {
+                    processors.add(initializedProcessor);
+                    log.info("Loaded RecSyncProcessor via SPI: " + initializedProcessor.getClass().getName());
                 }
             } catch (Exception e) {
                 log.log(Level.WARNING, "Failed to initialize processor " + processor.getClass().getName(), e);

@@ -22,14 +22,13 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final String USERNAME_KEY = "recceiver.cf.username";
     private static final String PASSWORD_KEY = "recceiver.cf.password";
 
-    private final ChannelFinderStore store;
+    private ChannelFinderStore store;
 
-    public CFRecSyncProcessor(ChannelFinderStore store) {
-        this.store = store;
+    public CFRecSyncProcessor() {
     }
 
     @Override
-    public RecSyncProcessor build(String name, Map<String, String> options) {
+    public RecSyncProcessor init(String name, Map<String, String> options) {
         if (!isEnabled(options)) {
             return null;
         }
@@ -41,13 +40,15 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         String username = normalized(options.get(USERNAME_KEY));
         String password = normalized(options.get(PASSWORD_KEY));
         if ((username == null) != (password == null)) {
-            throw new IllegalArgumentException("recceiver.cf.username and recceiver.cf.password must both be configured when authentication is used");
+            throw new IllegalArgumentException(
+                    "recceiver.cf.username and recceiver.cf.password must both be configured when authentication is used");
         }
 
         ChannelFinderStore store = username == null
                 ? new ChannelFinderHttpStore(serviceUrl)
                 : new ChannelFinderHttpStore(serviceUrl, username, password);
-        return new CFRecSyncProcessor(store);
+        this.store = store;
+        return this;
     }
 
     @Override
@@ -71,17 +72,13 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         Collection<ChannelFinderChannel> channels = new ArrayList<>();
         String owner = transaction.sourceHost() != null ? transaction.sourceHost() : transaction.sourceAddress();
 
-        for (AddRecordMessage record : transaction.recordsToAdd().values()) {
-            // Primary record only (aType=0), skip aliases (aType=1)
-            if (record.aType() != 0) {
+        for (AddRecordMessage addRecord : transaction.recordsToAdd().values()) {
+            if (addRecord.aType() != 0) {
                 continue;
             }
-
             Map<String, String> properties = new LinkedHashMap<>();
             properties.put(ChannelFinderCache.IOC_ID_PROPERTY, transaction.sourceAddress());
-
-            ChannelFinderChannel channel = new ChannelFinderChannel(record.recordName(), owner, properties);
-            channels.add(channel);
+            channels.add(new ChannelFinderChannel(addRecord.recordName(), owner, properties));
         }
 
         return channels;
@@ -106,14 +103,17 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         if (fromOptions != null && !fromOptions.isBlank()) {
             return Boolean.parseBoolean(fromOptions);
         }
+
         String fromProperty = System.getProperty(ENABLED_KEY);
         if (fromProperty != null && !fromProperty.isBlank()) {
             return Boolean.parseBoolean(fromProperty);
         }
+
         String fromEnv = System.getenv("RECCEIVER_CF_ENABLED");
         if (fromEnv != null && !fromEnv.isBlank()) {
             return Boolean.parseBoolean(fromEnv);
         }
+
         return false;
     }
 }
