@@ -1,4 +1,9 @@
-package org.phoebus.recceiver.spi;
+package org.phoebus.recceiver.spi.log;
+
+import org.phoebus.recceiver.spi.AddRecordMessage;
+import org.phoebus.recceiver.spi.ConnectionClosedEvent;
+import org.phoebus.recceiver.spi.RecSyncProcessor;
+import org.phoebus.recceiver.spi.RecSyncTransaction;
 
 import java.util.List;
 import java.util.Map;

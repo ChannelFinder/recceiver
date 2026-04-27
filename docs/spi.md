@@ -29,7 +29,7 @@ In plugin JAR, add:
 
 Each file should list implementation class names, one per line.
 
-This project includes a built-in sample provider: `org.phoebus.recceiver.spi.LogRecSyncProcessor`.
+This project includes a built-in sample provider: `org.phoebus.recceiver.spi.log.LogRecSyncProcessor`.
 It logs transaction details on `commit(...)` and logs connection close events on `connectionClosed(...)`.
 
 Recceiver discovers processor contributions with Java `ServiceLoader`.
