@@ -1,2 +1,3 @@
-org.phoebus.recceiver.spi.LogRecSyncProcessor
-org.phoebus.recceiver.spi.InMemoryRecSyncProcessor
+org.phoebus.recceiver.spi.log.LogRecSyncProcessor
+org.phoebus.recceiver.spi.debug.InMemoryRecSyncProcessor
+org.phoebus.recceiver.spi.cf.CFRecSyncProcessor
