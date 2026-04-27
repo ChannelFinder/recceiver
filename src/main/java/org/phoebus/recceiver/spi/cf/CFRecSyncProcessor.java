@@ -25,6 +25,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final String SERVICE_URL_KEY = "recceiver.cf.service-url";
     private static final String USERNAME_KEY = "recceiver.cf.username";
     private static final String PASSWORD_KEY = "recceiver.cf.password";
+    private static final String DELETE_ON_CLEAN_KEY = "recceiver.cf.delete-on-clean";
 
     // Inbound keys read from RecSync transaction client info / environment fields.
     // These names match protocol/env key spellings.
@@ -49,6 +50,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     public static final String CA_PORT_PROPERTY = "caPort";
     public static final String PVA_PORT_PROPERTY = "pvaPort";
     public static final String ACTIVE = "Active";
+    public static final String INACTIVE = "Inactive";
     public static final String DEFAULT_OWNER = "cfstore";
 
     private static final String RECCEIVER_ID = resolveRecceiverId();
@@ -67,6 +69,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     )));
 
     private ChannelFinderStore store;
+    private boolean deleteOnClean;
 
     public CFRecSyncProcessor() {
         // Required by ServiceLoader.
@@ -90,6 +93,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         }
 
         this.store = createStore(serviceUrl, username, password);
+        this.deleteOnClean = Boolean.parseBoolean(options.getOrDefault(DELETE_ON_CLEAN_KEY, "false"));
         String propertyOwner = username == null ? DEFAULT_OWNER : username;
         this.store.ensureProperties(REQUIRED_PROPERTIES, propertyOwner);
         return this;
@@ -209,6 +213,60 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     public void connectionClosed(ConnectionClosedEvent event) {
         log.info(() -> "[CFRecSyncProcessor] connectionClosed source=" + event.sourceAddress()
                 + " reason='" + event.reason() + "'");
+
+        String iocId = resolveIocId(event.sourceAddress());
+        if (iocId == null || iocId.isBlank()) {
+            return;
+        }
+
+        Map<String, ChannelFinderChannel> existing = store.findByProperty(IOC_ID_PROPERTY, iocId);
+        if (existing.isEmpty()) {
+            return;
+        }
+
+        if (deleteOnClean) {
+            store.deleteChannels(existing.keySet());
+            return;
+        }
+
+        String now = OffsetDateTime.now().toString();
+        Collection<ChannelFinderChannel> inactiveChannels = new ArrayList<>();
+        for (ChannelFinderChannel channel : existing.values()) {
+            Map<String, String> properties = new LinkedHashMap<>(channel.properties());
+            properties.put(PV_STATUS_PROPERTY, INACTIVE);
+            properties.put(TIME_PROPERTY, now);
+            inactiveChannels.add(new ChannelFinderChannel(channel.name(), channel.owner(), properties));
+        }
+        store.updateChannels(inactiveChannels);
+    }
+
+    private static String resolveIocId(String sourceAddress) {
+        if (sourceAddress == null || sourceAddress.isBlank()) {
+            return null;
+        }
+        String candidate = sourceAddress.trim();
+        if (candidate.startsWith("/")) {
+            candidate = candidate.substring(1);
+        }
+        int colonIndex = candidate.lastIndexOf(':');
+        if (colonIndex <= 0 || colonIndex >= candidate.length() - 1) {
+            return candidate;
+        }
+        String hostPart = candidate.substring(0, colonIndex);
+        String portPart = candidate.substring(colonIndex + 1);
+        try {
+            int port = Integer.parseInt(portPart);
+            if (port < 0 || port > 65535) {
+                return candidate;
+            }
+            int slashIndex = hostPart.lastIndexOf('/');
+            String host = slashIndex >= 0 && slashIndex < hostPart.length() - 1
+                    ? hostPart.substring(slashIndex + 1)
+                    : hostPart;
+            return host + ":" + port;
+        } catch (NumberFormatException ignored) {
+            return candidate;
+        }
     }
 
     private static String resolveOwner(Map<String, String> clientInfos) {

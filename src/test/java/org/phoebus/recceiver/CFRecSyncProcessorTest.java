@@ -161,6 +161,11 @@ class CFRecSyncProcessorTest {
         }
 
         @Override
+        public Map<String, ChannelFinderChannel> findByProperty(String propertyName, String propertyValue) {
+            return Map.of();
+        }
+
+        @Override
         public void updateChannels(Collection<ChannelFinderChannel> channels) {
             updatedChannels.addAll(channels);
         }

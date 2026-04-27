@@ -87,6 +87,9 @@ public class RecceiverApplication implements CommandLineRunner {
     @Value("${recceiver.cf.password:}")
     private String cfPassword;
 
+    @Value("${recceiver.cf.delete-on-clean:false}")
+    private String cfDeleteOnClean;
+
 
 
     private static ConfigurableApplicationContext context;
@@ -194,6 +197,7 @@ public class RecceiverApplication implements CommandLineRunner {
         options.put("recceiver.cf.service-url", cfServiceUrl);
         options.put("recceiver.cf.username", cfUsername);
         options.put("recceiver.cf.password", cfPassword);
+        options.put("recceiver.cf.delete-on-clean", cfDeleteOnClean);
         return options;
     }
 
