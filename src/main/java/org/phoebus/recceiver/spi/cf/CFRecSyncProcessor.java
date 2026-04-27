@@ -19,6 +19,8 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final Logger log = Logger.getLogger(CFRecSyncProcessor.class.getName());
     private static final String ENABLED_KEY = "recceiver.cf.enabled";
     private static final String SERVICE_URL_KEY = "recceiver.cf.service-url";
+    private static final String USERNAME_KEY = "recceiver.cf.username";
+    private static final String PASSWORD_KEY = "recceiver.cf.password";
 
     private final ChannelFinderStore store;
 
@@ -35,7 +37,16 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         if (serviceUrl == null || serviceUrl.isBlank()) {
             throw new IllegalArgumentException("recceiver.cf.service-url must be configured");
         }
-        ChannelFinderStore store = new ChannelFinderHttpStore(serviceUrl);
+
+        String username = normalized(options.get(USERNAME_KEY));
+        String password = normalized(options.get(PASSWORD_KEY));
+        if ((username == null) != (password == null)) {
+            throw new IllegalArgumentException("recceiver.cf.username and recceiver.cf.password must both be configured when authentication is used");
+        }
+
+        ChannelFinderStore store = username == null
+                ? new ChannelFinderHttpStore(serviceUrl)
+                : new ChannelFinderHttpStore(serviceUrl, username, password);
         return new CFRecSyncProcessor(store);
     }
 
@@ -80,6 +91,14 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     public void connectionClosed(ConnectionClosedEvent event) {
         log.info(() -> "[CFRecSyncProcessor] connectionClosed source=" + event.sourceAddress()
                 + " reason='" + event.reason() + "'");
+    }
+
+    private static String normalized(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     private static boolean isEnabled(Map<String, String> options) {
