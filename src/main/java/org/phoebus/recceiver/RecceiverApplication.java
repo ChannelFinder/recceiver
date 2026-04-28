@@ -93,6 +93,9 @@ public class RecceiverApplication implements CommandLineRunner {
     @Value("${recceiver.cf.alias-enabled:true}")
     private String cfAliasEnabled;
 
+    @Value("${recceiver.cf.infotags:}")
+    private String cfInfoTags;
+
 
 
     private static ConfigurableApplicationContext context;
@@ -202,6 +205,7 @@ public class RecceiverApplication implements CommandLineRunner {
         options.put("recceiver.cf.password", cfPassword);
         options.put("recceiver.cf.delete-on-clean", cfDeleteOnClean);
         options.put("recceiver.cf.alias-enabled", cfAliasEnabled);
+        options.put("recceiver.cf.infotags", cfInfoTags);
         return options;
     }
 

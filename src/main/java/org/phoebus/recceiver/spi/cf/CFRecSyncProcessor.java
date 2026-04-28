@@ -28,6 +28,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final String PASSWORD_KEY = "recceiver.cf.password";
     private static final String DELETE_ON_CLEAN_KEY = "recceiver.cf.delete-on-clean";
     private static final String ALIAS_ENABLED_KEY = "recceiver.cf.alias-enabled";
+    private static final String INFOTAGS_KEY = "recceiver.cf.infotags";
 
     // Inbound keys read from RecSync transaction client info / environment fields.
     // These names match protocol/env key spellings.
@@ -74,6 +75,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private ChannelFinderStore store;
     private boolean deleteOnClean;
     private boolean aliasEnabled;
+    private Set<String> infoTagWhitelist = Set.of();
 
     public CFRecSyncProcessor() {
         // Required by ServiceLoader.
@@ -99,11 +101,13 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         this.store = createStore(serviceUrl, username, password);
         this.deleteOnClean = Boolean.parseBoolean(options.getOrDefault(DELETE_ON_CLEAN_KEY, "false"));
         this.aliasEnabled = Boolean.parseBoolean(options.getOrDefault(ALIAS_ENABLED_KEY, "false"));
+        this.infoTagWhitelist = parseInfoTags(options.get(INFOTAGS_KEY));
         String propertyOwner = username == null ? DEFAULT_OWNER : username;
         Set<String> requiredProperties = new LinkedHashSet<>(REQUIRED_PROPERTIES);
         if (aliasEnabled) {
             requiredProperties.add(ALIAS_PROPERTY);
         }
+        requiredProperties.addAll(infoTagWhitelist);
         this.store.ensureProperties(requiredProperties, propertyOwner);
         return this;
     }
@@ -134,58 +138,18 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private Collection<ChannelFinderChannel> buildChannels(RecSyncTransaction transaction) {
         Collection<ChannelFinderChannel> channels = new ArrayList<>();
         Map<String, String> clientInfos = transaction.clientInfos();
+        Map<Integer, Map<String, String>> recordInfos = transaction.recordInfosToAdd();
         String owner = resolveOwner(clientInfos);
-        String hostName = resolveHostName(transaction, clientInfos);
-        String iocName = resolveIocName(transaction, clientInfos);
-        String iocId = resolveIocId(transaction);
-        String iocIp = resolveIocIp(transaction);
-        String timestamp = OffsetDateTime.now().toString();
-        String caPort = normalized(clientInfos.get(CA_PORT_ENV_KEY));
-        String pvaPort = normalized(clientInfos.get(PVA_PORT_ENV_KEY));
+        // Group the commit-wide IOC/timestamp/port values once so primary and alias
+        // channel builders reuse the same shared metadata.
+        ChannelContext context = buildChannelContext(transaction, clientInfos);
 
-        for (AddRecordMessage addRecord : transaction.recordsToAdd().values()) {
-            if (addRecord.aType() != 0) {
-                continue;
-            }
-            Map<String, String> properties = buildStandardProperties(
-                    addRecord,
-                    hostName,
-                    iocName,
-                    iocId,
-                    iocIp,
-                    timestamp,
-                    caPort,
-                    pvaPort
-            );
-            channels.add(new ChannelFinderChannel(addRecord.recordName(), owner, properties));
-        }
+        warnForOrphanInfoTags(transaction, recordInfos);
+
+        addPrimaryChannels(transaction, recordInfos, owner, context, channels);
 
         if (aliasEnabled) {
-            for (Map.Entry<Integer, List<String>> aliasEntry : transaction.aliases().entrySet()) {
-                AddRecordMessage primaryRecord = transaction.recordsToAdd().get(aliasEntry.getKey());
-                if (primaryRecord == null) {
-                    log.warning(() -> "[CFRecSyncProcessor] alias recId " + aliasEntry.getKey()
-                            + " has no primary record in recordsToAdd");
-                    continue;
-                }
-                for (String aliasName : aliasEntry.getValue()) {
-                    if (aliasName == null || aliasName.isBlank()) {
-                        continue;
-                    }
-                    Map<String, String> aliasProperties = buildStandardProperties(
-                            primaryRecord,
-                            hostName,
-                            iocName,
-                            iocId,
-                            iocIp,
-                            timestamp,
-                            caPort,
-                            pvaPort
-                    );
-                    aliasProperties.put(ALIAS_PROPERTY, primaryRecord.recordName());
-                    channels.add(new ChannelFinderChannel(aliasName, owner, aliasProperties));
-                }
-            }
+            addAliasChannels(transaction, recordInfos, owner, context, channels);
         }
 
         return channels;
@@ -218,32 +182,112 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         return transaction.sourceHost() != null ? transaction.sourceHost() : transaction.sourceAddress();
     }
 
-    private static Map<String, String> buildStandardProperties(
+    private Map<String, String> buildProperties(
             AddRecordMessage addRecord,
-            String hostName,
-            String iocName,
-            String iocId,
-            String iocIp,
-            String timestamp,
-            String caPort,
-            String pvaPort
+            Map<String, String> recordInfoProperties,
+            ChannelContext context
     ) {
-        Map<String, String> properties = new LinkedHashMap<>();
-        properties.put(HOST_NAME_PROPERTY, hostName);
-        properties.put(IOC_NAME_PROPERTY, iocName);
-        properties.put(PV_STATUS_PROPERTY, ACTIVE);
-        properties.put(TIME_PROPERTY, timestamp);
-        properties.put(IOC_ID_PROPERTY, iocId);
-        properties.put(IOC_IP_PROPERTY, iocIp);
-        properties.put(RECCEIVER_ID_PROPERTY, RECCEIVER_ID);
-        properties.put(RECORD_TYPE_PROPERTY, addRecord.recordType());
-        if (caPort != null) {
-            properties.put(CA_PORT_PROPERTY, caPort);
-        }
-        if (pvaPort != null) {
-            properties.put(PVA_PORT_PROPERTY, pvaPort);
+        Map<String, String> properties = buildStandardProperties(
+                addRecord,
+                context
+        );
+        if (recordInfoProperties != null && !recordInfoProperties.isEmpty() && !infoTagWhitelist.isEmpty()) {
+            for (Map.Entry<String, String> entry : recordInfoProperties.entrySet()) {
+                if (infoTagWhitelist.contains(entry.getKey())) {
+                    properties.put(entry.getKey(), entry.getValue());
+                }
+            }
         }
         return properties;
+    }
+
+    private static Map<String, String> buildStandardProperties(AddRecordMessage addRecord, ChannelContext context) {
+        Map<String, String> properties = new LinkedHashMap<>();
+        properties.put(HOST_NAME_PROPERTY, context.hostName());
+        properties.put(IOC_NAME_PROPERTY, context.iocName());
+        properties.put(PV_STATUS_PROPERTY, ACTIVE);
+        properties.put(TIME_PROPERTY, context.timestamp());
+        properties.put(IOC_ID_PROPERTY, context.iocId());
+        properties.put(IOC_IP_PROPERTY, context.iocIp());
+        properties.put(RECCEIVER_ID_PROPERTY, RECCEIVER_ID);
+        properties.put(RECORD_TYPE_PROPERTY, addRecord.recordType());
+        if (context.caPort() != null) {
+            properties.put(CA_PORT_PROPERTY, context.caPort());
+        }
+        if (context.pvaPort() != null) {
+            properties.put(PVA_PORT_PROPERTY, context.pvaPort());
+        }
+        return properties;
+    }
+
+    private static ChannelContext buildChannelContext(RecSyncTransaction transaction, Map<String, String> clientInfos) {
+        return new ChannelContext(
+                resolveHostName(transaction, clientInfos),
+                resolveIocName(transaction, clientInfos),
+                resolveIocId(transaction),
+                resolveIocIp(transaction),
+                OffsetDateTime.now().toString(),
+                normalized(clientInfos.get(CA_PORT_ENV_KEY)),
+                normalized(clientInfos.get(PVA_PORT_ENV_KEY))
+        );
+    }
+
+    private void warnForOrphanInfoTags(RecSyncTransaction transaction, Map<Integer, Map<String, String>> recordInfos) {
+        for (Map.Entry<Integer, Map<String, String>> recordInfoEntry : recordInfos.entrySet()) {
+            if (!transaction.recordsToAdd().containsKey(recordInfoEntry.getKey())) {
+                log.warning(() -> "[CFRecSyncProcessor] info tags for recId " + recordInfoEntry.getKey()
+                        + " have no matching primary record");
+            }
+        }
+    }
+
+    private void addAliasChannels(
+            RecSyncTransaction transaction,
+            Map<Integer, Map<String, String>> recordInfos,
+            String owner,
+            ChannelContext context,
+            Collection<ChannelFinderChannel> channels
+    ) {
+        for (Map.Entry<Integer, List<String>> aliasEntry : transaction.aliases().entrySet()) {
+            AddRecordMessage primaryRecord = transaction.recordsToAdd().get(aliasEntry.getKey());
+            if (primaryRecord == null) {
+                log.warning(() -> "[CFRecSyncProcessor] alias recId " + aliasEntry.getKey()
+                        + " has no primary record in recordsToAdd");
+                continue;
+            }
+            for (String aliasName : aliasEntry.getValue()) {
+                if (aliasName == null || aliasName.isBlank()) {
+                    continue;
+                }
+                Map<String, String> aliasProperties = buildProperties(
+                        primaryRecord,
+                        recordInfos.get(primaryRecord.recId()),
+                        context
+                );
+                aliasProperties.put(ALIAS_PROPERTY, primaryRecord.recordName());
+                channels.add(new ChannelFinderChannel(aliasName, owner, aliasProperties));
+            }
+        }
+    }
+
+    private void addPrimaryChannels(
+            RecSyncTransaction transaction,
+            Map<Integer, Map<String, String>> recordInfos,
+            String owner,
+            ChannelContext context,
+            Collection<ChannelFinderChannel> channels
+    ) {
+        for (AddRecordMessage addRecord : transaction.recordsToAdd().values()) {
+            if (addRecord.aType() != 0) {
+                continue;
+            }
+            Map<String, String> properties = buildProperties(
+                    addRecord,
+                    recordInfos.get(addRecord.recId()),
+                    context
+            );
+            channels.add(new ChannelFinderChannel(addRecord.recordName(), owner, properties));
+        }
     }
 
     @Override
@@ -344,6 +388,34 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static Set<String> parseInfoTags(String configuredInfoTags) {
+        String normalizedInfoTags = normalized(configuredInfoTags);
+        if (normalizedInfoTags == null) {
+            return Set.of();
+        }
+
+        Set<String> parsed = new LinkedHashSet<>();
+        for (String token : normalizedInfoTags.split("[,\\s]+")) {
+            String infoTag = normalized(token);
+            if (infoTag != null) {
+                parsed.add(infoTag);
+            }
+        }
+        return Set.copyOf(parsed);
+    }
+
+    // Shared metadata copied into every channel emitted for a single commit.
+    private record ChannelContext(
+            String hostName,
+            String iocName,
+            String iocId,
+            String iocIp,
+            String timestamp,
+            String caPort,
+            String pvaPort
+    ) {
     }
 
     private static boolean isEnabled(Map<String, String> options) {

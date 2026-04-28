@@ -1,6 +1,7 @@
 package org.phoebus.recceiver;
 
 import org.junit.jupiter.api.Test;
+import org.phoebus.recceiver.spi.AddInfoMessage;
 import org.phoebus.recceiver.spi.AddRecordMessage;
 import org.phoebus.recceiver.spi.RecSyncProcessor;
 import org.phoebus.recceiver.spi.RecSyncTransaction;
@@ -93,6 +94,23 @@ class CFRecSyncProcessorTest {
         assertNotNull(initialized);
         assertTrue(store.ensuredProperties.contains(CFRecSyncProcessor.ALIAS_PROPERTY));
         assertEquals(11, store.ensuredProperties.size());
+    }
+
+    @Test
+    void initEnsuresWhitelistedInfoTagProperties() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+
+        RecSyncProcessor initialized = processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.infotags", "archive device"
+        ));
+
+        assertNotNull(initialized);
+        assertTrue(store.ensuredProperties.contains("archive"));
+        assertTrue(store.ensuredProperties.contains("device"));
+        assertEquals(12, store.ensuredProperties.size());
     }
 
     @Test
@@ -200,6 +218,60 @@ class CFRecSyncProcessorTest {
         assertEquals("127.0.0.1:5070", alias.property(CFRecSyncProcessor.IOC_ID_PROPERTY));
         assertEquals(CFRecSyncProcessor.ACTIVE, alias.property(CFRecSyncProcessor.PV_STATUS_PROPERTY));
         assertEquals("ai", alias.property(CFRecSyncProcessor.RECORD_TYPE_PROPERTY));
+    }
+
+    @Test
+    void commitPublishesOnlyWhitelistedInfoTags() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+        processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.alias-enabled", "true",
+                "recceiver.cf.infotags", "archive, device"
+        ));
+
+        RecSyncTransaction transaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(
+                        new AddRecordMessage(10, 0, 3, 6, "ai", "pv:one"),
+                        new AddRecordMessage(10, 1, 3, 12, "ai", "pv:one:alias")
+                ),
+                List.of(),
+                List.of(
+                        new AddInfoMessage(10, 7, 11, "archive", "MONITOR@0.1"),
+                        new AddInfoMessage(10, 6, 7, "device", "demo-cf"),
+                        new AddInfoMessage(10, 4, 3, "DESC", "abc"),
+                        new AddInfoMessage(99, 7, 4, "archive", "lost")
+                ),
+                Map.of(
+                        CFRecSyncProcessor.IOCNAME_KEY, "ioc-a",
+                        CFRecSyncProcessor.HOSTNAME_KEY, "host-a",
+                        CFRecSyncProcessor.ENGINEER_KEY, "alice"
+                ),
+                true,
+                true
+        );
+
+        processor.commit(transaction);
+
+        assertEquals(2, store.updatedChannels.size());
+        ChannelFinderChannel primary = store.updatedChannels.stream()
+                .filter(channel -> "pv:one".equals(channel.name()))
+                .findFirst()
+                .orElseThrow();
+        ChannelFinderChannel alias = store.updatedChannels.stream()
+                .filter(channel -> "pv:one:alias".equals(channel.name()))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals("MONITOR@0.1", primary.property("archive"));
+        assertEquals("demo-cf", primary.property("device"));
+        assertNull(primary.property("DESC"));
+        assertEquals("MONITOR@0.1", alias.property("archive"));
+        assertEquals("demo-cf", alias.property("device"));
+        assertNull(alias.property("DESC"));
+        assertEquals("pv:one", alias.property(CFRecSyncProcessor.ALIAS_PROPERTY));
     }
 
     private static final class TestProcessor extends CFRecSyncProcessor {
