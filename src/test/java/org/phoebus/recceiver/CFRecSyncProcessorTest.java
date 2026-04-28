@@ -80,6 +80,22 @@ class CFRecSyncProcessorTest {
     }
 
     @Test
+    void initEnsuresAliasPropertyWhenAliasSupportEnabled() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+
+        RecSyncProcessor initialized = processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.alias-enabled", "true"
+        ));
+
+        assertNotNull(initialized);
+        assertTrue(store.ensuredProperties.contains(CFRecSyncProcessor.ALIAS_PROPERTY));
+        assertEquals(11, store.ensuredProperties.size());
+    }
+
+    @Test
     void initFailsWhenOnlyOneCredentialProvided() {
         TestStore store = new TestStore();
         TestProcessor processor = new TestProcessor(store);
@@ -135,6 +151,55 @@ class CFRecSyncProcessorTest {
         assertFalse(channel.property(CFRecSyncProcessor.TIME_PROPERTY).isBlank());
         assertNotNull(channel.property(CFRecSyncProcessor.RECCEIVER_ID_PROPERTY));
         assertFalse(channel.property(CFRecSyncProcessor.RECCEIVER_ID_PROPERTY).isBlank());
+    }
+
+    @Test
+    void commitPublishesAliasChannelsWhenEnabled() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+        processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.alias-enabled", "true"
+        ));
+
+        RecSyncTransaction transaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(
+                        new AddRecordMessage(10, 0, 3, 6, "ai", "pv:one"),
+                        new AddRecordMessage(10, 1, 3, 12, "ai", "pv:one:alias")
+                ),
+                List.of(),
+                List.of(),
+                Map.of(
+                        CFRecSyncProcessor.IOCNAME_KEY, "ioc-a",
+                        CFRecSyncProcessor.HOSTNAME_KEY, "host-a",
+                        CFRecSyncProcessor.ENGINEER_KEY, "alice"
+                ),
+                true,
+                true
+        );
+
+        processor.commit(transaction);
+
+        assertEquals(2, store.updatedChannels.size());
+        ChannelFinderChannel primary = store.updatedChannels.stream()
+                .filter(channel -> "pv:one".equals(channel.name()))
+                .findFirst()
+                .orElseThrow();
+        ChannelFinderChannel alias = store.updatedChannels.stream()
+                .filter(channel -> "pv:one:alias".equals(channel.name()))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals("alice", primary.owner());
+        assertEquals("alice", alias.owner());
+        assertEquals("pv:one", alias.property(CFRecSyncProcessor.ALIAS_PROPERTY));
+        assertEquals("host-a", alias.property(CFRecSyncProcessor.HOST_NAME_PROPERTY));
+        assertEquals("ioc-a", alias.property(CFRecSyncProcessor.IOC_NAME_PROPERTY));
+        assertEquals("127.0.0.1:5070", alias.property(CFRecSyncProcessor.IOC_ID_PROPERTY));
+        assertEquals(CFRecSyncProcessor.ACTIVE, alias.property(CFRecSyncProcessor.PV_STATUS_PROPERTY));
+        assertEquals("ai", alias.property(CFRecSyncProcessor.RECORD_TYPE_PROPERTY));
     }
 
     private static final class TestProcessor extends CFRecSyncProcessor {

@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Logger;
@@ -26,6 +27,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final String USERNAME_KEY = "recceiver.cf.username";
     private static final String PASSWORD_KEY = "recceiver.cf.password";
     private static final String DELETE_ON_CLEAN_KEY = "recceiver.cf.delete-on-clean";
+    private static final String ALIAS_ENABLED_KEY = "recceiver.cf.alias-enabled";
 
     // Inbound keys read from RecSync transaction client info / environment fields.
     // These names match protocol/env key spellings.
@@ -47,6 +49,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     public static final String TIME_PROPERTY = "time";
     public static final String RECCEIVER_ID_PROPERTY = "recceiverID";
     public static final String RECORD_TYPE_PROPERTY = "recordType";
+    public static final String ALIAS_PROPERTY = "alias";
     public static final String CA_PORT_PROPERTY = "caPort";
     public static final String PVA_PORT_PROPERTY = "pvaPort";
     public static final String ACTIVE = "Active";
@@ -70,6 +73,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
 
     private ChannelFinderStore store;
     private boolean deleteOnClean;
+    private boolean aliasEnabled;
 
     public CFRecSyncProcessor() {
         // Required by ServiceLoader.
@@ -94,8 +98,13 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
 
         this.store = createStore(serviceUrl, username, password);
         this.deleteOnClean = Boolean.parseBoolean(options.getOrDefault(DELETE_ON_CLEAN_KEY, "false"));
+        this.aliasEnabled = Boolean.parseBoolean(options.getOrDefault(ALIAS_ENABLED_KEY, "false"));
         String propertyOwner = username == null ? DEFAULT_OWNER : username;
-        this.store.ensureProperties(REQUIRED_PROPERTIES, propertyOwner);
+        Set<String> requiredProperties = new LinkedHashSet<>(REQUIRED_PROPERTIES);
+        if (aliasEnabled) {
+            requiredProperties.add(ALIAS_PROPERTY);
+        }
+        this.store.ensureProperties(requiredProperties, propertyOwner);
         return this;
     }
 
@@ -149,6 +158,34 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
                     pvaPort
             );
             channels.add(new ChannelFinderChannel(addRecord.recordName(), owner, properties));
+        }
+
+        if (aliasEnabled) {
+            for (Map.Entry<Integer, List<String>> aliasEntry : transaction.aliases().entrySet()) {
+                AddRecordMessage primaryRecord = transaction.recordsToAdd().get(aliasEntry.getKey());
+                if (primaryRecord == null) {
+                    log.warning(() -> "[CFRecSyncProcessor] alias recId " + aliasEntry.getKey()
+                            + " has no primary record in recordsToAdd");
+                    continue;
+                }
+                for (String aliasName : aliasEntry.getValue()) {
+                    if (aliasName == null || aliasName.isBlank()) {
+                        continue;
+                    }
+                    Map<String, String> aliasProperties = buildStandardProperties(
+                            primaryRecord,
+                            hostName,
+                            iocName,
+                            iocId,
+                            iocIp,
+                            timestamp,
+                            caPort,
+                            pvaPort
+                    );
+                    aliasProperties.put(ALIAS_PROPERTY, primaryRecord.recordName());
+                    channels.add(new ChannelFinderChannel(aliasName, owner, aliasProperties));
+                }
+            }
         }
 
         return channels;

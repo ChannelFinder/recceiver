@@ -90,6 +90,9 @@ public class RecceiverApplication implements CommandLineRunner {
     @Value("${recceiver.cf.delete-on-clean:false}")
     private String cfDeleteOnClean;
 
+    @Value("${recceiver.cf.alias-enabled:true}")
+    private String cfAliasEnabled;
+
 
 
     private static ConfigurableApplicationContext context;
@@ -198,6 +201,7 @@ public class RecceiverApplication implements CommandLineRunner {
         options.put("recceiver.cf.username", cfUsername);
         options.put("recceiver.cf.password", cfPassword);
         options.put("recceiver.cf.delete-on-clean", cfDeleteOnClean);
+        options.put("recceiver.cf.alias-enabled", cfAliasEnabled);
         return options;
     }
 
