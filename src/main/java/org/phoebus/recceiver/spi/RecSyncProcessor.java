@@ -17,5 +17,9 @@ public interface RecSyncProcessor {
     default void connectionClosed(ConnectionClosedEvent event) {
         // Optional callback for connection lifecycle notifications.
     }
+
+    default void destroy() {
+        // Optional callback for cleanup when the processor is being removed.
+    }
 }
 
