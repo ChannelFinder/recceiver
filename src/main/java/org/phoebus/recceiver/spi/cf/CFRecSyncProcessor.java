@@ -10,11 +10,13 @@ import java.net.UnknownHostException;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
 /**
@@ -27,6 +29,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final String USERNAME_KEY = "recceiver.cf.username";
     private static final String PASSWORD_KEY = "recceiver.cf.password";
     private static final String DELETE_ON_CLEAN_KEY = "recceiver.cf.delete-on-clean";
+    private static final String DELETE_ON_SHUTDOWN_KEY = "recceiver.cf.delete-on-shutdown";
     private static final String ALIAS_ENABLED_KEY = "recceiver.cf.alias-enabled";
     private static final String INFOTAGS_KEY = "recceiver.cf.infotags";
     private static final String ENVIRONMENT_VARS_KEY = "recceiver.cf.environment-vars";
@@ -75,9 +78,16 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
 
     private ChannelFinderStore store;
     private boolean deleteOnClean;
+    private boolean deleteOnShutdown;
     private boolean aliasEnabled;
     private Set<String> infoTagWhitelist = Set.of();
     private Map<String, String> environmentVarMappings = Map.of();
+    private Set<String> managedProperties = Set.of();  // Properties managed by recceiver for property merging
+
+    // IOC connection registry: tracks all IOCs that have connected to this processor.
+    // Key = iocId (e.g., "host:port"), Value = IocInfo metadata
+    // Used during shutdown to clean up channels belonging to tracked IOCs.
+    private final Map<String, IocInfo> iocRegistry = new ConcurrentHashMap<>();
 
     public CFRecSyncProcessor() {
         // Required by ServiceLoader.
@@ -102,6 +112,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
 
         this.store = createStore(serviceUrl, username, password);
         this.deleteOnClean = Boolean.parseBoolean(options.getOrDefault(DELETE_ON_CLEAN_KEY, "false"));
+        this.deleteOnShutdown = Boolean.parseBoolean(options.getOrDefault(DELETE_ON_SHUTDOWN_KEY, "true"));
         this.aliasEnabled = Boolean.parseBoolean(options.getOrDefault(ALIAS_ENABLED_KEY, "false"));
         this.infoTagWhitelist = parseInfoTags(options.get(INFOTAGS_KEY));
         // Parse once at init so commit path only performs lookups.
@@ -133,6 +144,26 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
                 + " deletes=" + transaction.recordsToDelete().size()
                 + " recordInfos=" + transaction.recordInfosToAdd().size()
                 + " clientInfos=" + transaction.clientInfos().size());
+
+        // Register this IOC in the registry for shutdown cleanup tracking.
+        if (transaction.initial()) {
+            String iocId = resolveIocId(transaction);
+            if (iocId != null && !iocId.isBlank()) {
+                Map<String, String> clientInfos = transaction.clientInfos();
+                IocInfo iocInfo = new IocInfo(
+                        iocId,
+                        transaction.sourceAddress(),
+                        transaction.sourceHost(),
+                        transaction.sourcePort(),
+                        normalized(clientInfos.get(IOCNAME_KEY)),
+                        resolveHostName(transaction, clientInfos),
+                        resolveOwner(clientInfos),
+                        OffsetDateTime.now().toString()
+                );
+                iocRegistry.put(iocId, iocInfo);
+                log.info(() -> "[CFRecSyncProcessor] registered IOC in shutdown registry: " + iocId);
+            }
+        }
 
         Collection<ChannelFinderChannel> channels = buildChannels(transaction);
         if (!channels.isEmpty()) {
@@ -330,6 +361,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
 
         if (deleteOnClean) {
             store.deleteChannels(existing.keySet());
+            iocRegistry.remove(iocId);
             return;
         }
 
@@ -342,7 +374,81 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             inactiveChannels.add(new ChannelFinderChannel(channel.name(), channel.owner(), properties));
         }
         store.updateChannels(inactiveChannels);
+        iocRegistry.remove(iocId);
     }
+
+    @Override
+    public void destroy() {
+        log.info("[CFRecSyncProcessor] destroy: cleaning up tracked IOCs on shutdown");
+        try {
+            cleanupTrackedIocs();
+        } catch (Exception e) {
+            log.severe("[CFRecSyncProcessor] error during shutdown cleanup: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Performs cleanup of all IOCs tracked in the iocRegistry.
+     * Called during application shutdown via Spring @PreDestroy lifecycle.
+     * If deleteOnShutdown is true, deletes all channels belonging to tracked IOCs.
+     * Otherwise, marks them as inactive.
+     */
+    private void cleanupTrackedIocs() {
+        if (iocRegistry.isEmpty()) {
+            log.info("[CFRecSyncProcessor] no IOCs to clean up on shutdown");
+            return;
+        }
+
+        log.info(() -> "[CFRecSyncProcessor] cleaning up " + iocRegistry.size() + " tracked IOCs");
+
+        // Iterate over a copy of the registry keys to avoid ConcurrentModificationException
+        Set<String> iocIds = new HashSet<>(iocRegistry.keySet());
+        for (String iocId : iocIds) {
+            try {
+                cleanupIoc(iocId);
+            } catch (Exception e) {
+                log.warning(() -> "[CFRecSyncProcessor] error cleaning up IOC " + iocId + ": " + e.getMessage());
+            }
+        }
+    }
+
+    protected int iocRegistrySize() {
+        return iocRegistry.size();
+    }
+
+    /**
+     * Cleans up channels for a specific IOC.
+     * @param iocId the IOC ID to clean up (e.g., "host:port")
+     */
+    private void cleanupIoc(String iocId) {
+        Map<String, ChannelFinderChannel> existing = store.findByProperty(IOC_ID_PROPERTY, iocId);
+        if (existing.isEmpty()) {
+            log.info(() -> "[CFRecSyncProcessor] no channels found for IOC " + iocId);
+            iocRegistry.remove(iocId);
+            return;
+        }
+
+        log.info(() -> "[CFRecSyncProcessor] found " + existing.size() + " channels for IOC " + iocId);
+
+        if (deleteOnShutdown) {
+            log.info(() -> "[CFRecSyncProcessor] deleting " + existing.size() + " channels for IOC " + iocId);
+            store.deleteChannels(existing.keySet());
+        } else {
+            log.info(() -> "[CFRecSyncProcessor] marking " + existing.size() + " channels as inactive for IOC " + iocId);
+            String now = OffsetDateTime.now().toString();
+            Collection<ChannelFinderChannel> inactiveChannels = new ArrayList<>();
+            for (ChannelFinderChannel channel : existing.values()) {
+                Map<String, String> properties = new LinkedHashMap<>(channel.properties());
+                properties.put(PV_STATUS_PROPERTY, INACTIVE);
+                properties.put(TIME_PROPERTY, now);
+                inactiveChannels.add(new ChannelFinderChannel(channel.name(), channel.owner(), properties));
+            }
+            store.updateChannels(inactiveChannels);
+        }
+
+        iocRegistry.remove(iocId);
+    }
+
 
     private static String resolveIocId(String sourceAddress) {
         if (sourceAddress == null || sourceAddress.isBlank()) {
@@ -473,6 +579,19 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             String caPort,
             String pvaPort,
             Map<String, String> mappedEnvironmentProperties
+    ) {
+    }
+
+    // Metadata about a connected IOC, tracked for shutdown cleanup.
+    private record IocInfo(
+            String iocId,
+            String sourceAddress,
+            String sourceHost,
+            Integer sourcePort,
+            String iocName,
+            String hostName,
+            String owner,
+            String connectedAt
     ) {
     }
 
