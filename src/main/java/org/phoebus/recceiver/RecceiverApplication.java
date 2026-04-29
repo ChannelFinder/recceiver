@@ -96,6 +96,9 @@ public class RecceiverApplication implements CommandLineRunner {
     @Value("${recceiver.cf.infotags:}")
     private String cfInfoTags;
 
+    @Value("${recceiver.cf.environment-vars:}")
+    private String cfEnvironmentVars;
+
 
 
     private static ConfigurableApplicationContext context;
@@ -206,6 +209,7 @@ public class RecceiverApplication implements CommandLineRunner {
         options.put("recceiver.cf.delete-on-clean", cfDeleteOnClean);
         options.put("recceiver.cf.alias-enabled", cfAliasEnabled);
         options.put("recceiver.cf.infotags", cfInfoTags);
+        options.put("recceiver.cf.environment-vars", cfEnvironmentVars);
         return options;
     }
 

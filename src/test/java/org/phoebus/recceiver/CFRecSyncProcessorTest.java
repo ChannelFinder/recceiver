@@ -114,6 +114,37 @@ class CFRecSyncProcessorTest {
     }
 
     @Test
+    void initEnsuresEnvironmentVariableMappedProperties() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+
+        RecSyncProcessor initialized = processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.environment-vars",
+                "ENGINEER:Engineer,EPICS_BASE:EpicsVersion,PWD:WorkingDirectory"
+        ));
+
+        assertNotNull(initialized);
+        assertTrue(store.ensuredProperties.contains("Engineer"));
+        assertTrue(store.ensuredProperties.contains("EpicsVersion"));
+        assertTrue(store.ensuredProperties.contains("WorkingDirectory"));
+        assertEquals(13, store.ensuredProperties.size());
+    }
+
+    @Test
+    void initFailsOnMalformedEnvironmentVariableMapping() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+
+        assertThrows(IllegalArgumentException.class, () -> processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.environment-vars", "ENGINEER"
+        )));
+    }
+
+    @Test
     void initFailsWhenOnlyOneCredentialProvided() {
         TestStore store = new TestStore();
         TestProcessor processor = new TestProcessor(store);
@@ -272,6 +303,57 @@ class CFRecSyncProcessorTest {
         assertEquals("demo-cf", alias.property("device"));
         assertNull(alias.property("DESC"));
         assertEquals("pv:one", alias.property(CFRecSyncProcessor.ALIAS_PROPERTY));
+    }
+
+    @Test
+    void commitPublishesMappedEnvironmentVariableProperties() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+        processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.alias-enabled", "true",
+                "recceiver.cf.environment-vars",
+                "ENGINEER:Engineer,EPICS_BASE:EpicsVersion,PWD:WorkingDirectory"
+        ));
+
+        RecSyncTransaction transaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(
+                        new AddRecordMessage(10, 0, 3, 6, "ai", "pv:one"),
+                        new AddRecordMessage(10, 1, 3, 12, "ai", "pv:one:alias")
+                ),
+                List.of(),
+                List.of(),
+                Map.of(
+                        CFRecSyncProcessor.IOCNAME_KEY, "ioc-a",
+                        CFRecSyncProcessor.HOSTNAME_KEY, "host-a",
+                        CFRecSyncProcessor.ENGINEER_KEY, "alice",
+                        "EPICS_BASE", "7.0.8",
+                        "PWD", "/ioc/demo"
+                ),
+                true,
+                true
+        );
+
+        processor.commit(transaction);
+
+        assertEquals(2, store.updatedChannels.size());
+        ChannelFinderChannel primary = store.updatedChannels.stream()
+                .filter(channel -> "pv:one".equals(channel.name()))
+                .findFirst()
+                .orElseThrow();
+        ChannelFinderChannel alias = store.updatedChannels.stream()
+                .filter(channel -> "pv:one:alias".equals(channel.name()))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals("alice", primary.property("Engineer"));
+        assertEquals("7.0.8", primary.property("EpicsVersion"));
+        assertEquals("/ioc/demo", primary.property("WorkingDirectory"));
+        assertEquals("alice", alias.property("Engineer"));
+        assertEquals("7.0.8", alias.property("EpicsVersion"));
+        assertEquals("/ioc/demo", alias.property("WorkingDirectory"));
     }
 
     private static final class TestProcessor extends CFRecSyncProcessor {

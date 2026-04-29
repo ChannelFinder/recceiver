@@ -29,6 +29,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final String DELETE_ON_CLEAN_KEY = "recceiver.cf.delete-on-clean";
     private static final String ALIAS_ENABLED_KEY = "recceiver.cf.alias-enabled";
     private static final String INFOTAGS_KEY = "recceiver.cf.infotags";
+    private static final String ENVIRONMENT_VARS_KEY = "recceiver.cf.environment-vars";
 
     // Inbound keys read from RecSync transaction client info / environment fields.
     // These names match protocol/env key spellings.
@@ -76,6 +77,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private boolean deleteOnClean;
     private boolean aliasEnabled;
     private Set<String> infoTagWhitelist = Set.of();
+    private Map<String, String> environmentVarMappings = Map.of();
 
     public CFRecSyncProcessor() {
         // Required by ServiceLoader.
@@ -102,12 +104,15 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         this.deleteOnClean = Boolean.parseBoolean(options.getOrDefault(DELETE_ON_CLEAN_KEY, "false"));
         this.aliasEnabled = Boolean.parseBoolean(options.getOrDefault(ALIAS_ENABLED_KEY, "false"));
         this.infoTagWhitelist = parseInfoTags(options.get(INFOTAGS_KEY));
+        // Parse once at init so commit path only performs lookups.
+        this.environmentVarMappings = parseEnvironmentVarMappings(options.get(ENVIRONMENT_VARS_KEY));
         String propertyOwner = username == null ? DEFAULT_OWNER : username;
         Set<String> requiredProperties = new LinkedHashSet<>(REQUIRED_PROPERTIES);
         if (aliasEnabled) {
             requiredProperties.add(ALIAS_PROPERTY);
         }
         requiredProperties.addAll(infoTagWhitelist);
+        requiredProperties.addAll(environmentVarMappings.values());
         this.store.ensureProperties(requiredProperties, propertyOwner);
         return this;
     }
@@ -217,10 +222,12 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         if (context.pvaPort() != null) {
             properties.put(PVA_PORT_PROPERTY, context.pvaPort());
         }
+        // Apply configured ENV->property mappings resolved from clientInfos for this commit.
+        properties.putAll(context.mappedEnvironmentProperties());
         return properties;
     }
 
-    private static ChannelContext buildChannelContext(RecSyncTransaction transaction, Map<String, String> clientInfos) {
+    private ChannelContext buildChannelContext(RecSyncTransaction transaction, Map<String, String> clientInfos) {
         return new ChannelContext(
                 resolveHostName(transaction, clientInfos),
                 resolveIocName(transaction, clientInfos),
@@ -228,8 +235,24 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
                 resolveIocIp(transaction),
                 OffsetDateTime.now().toString(),
                 normalized(clientInfos.get(CA_PORT_ENV_KEY)),
-                normalized(clientInfos.get(PVA_PORT_ENV_KEY))
+                normalized(clientInfos.get(PVA_PORT_ENV_KEY)),
+                buildMappedEnvironmentProperties(clientInfos)
         );
+    }
+
+    private Map<String, String> buildMappedEnvironmentProperties(Map<String, String> clientInfos) {
+        if (environmentVarMappings.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<String, String> mappedProperties = new LinkedHashMap<>();
+        for (Map.Entry<String, String> envMapping : environmentVarMappings.entrySet()) {
+            String value = normalized(clientInfos.get(envMapping.getKey()));
+            if (value != null) {
+                mappedProperties.put(envMapping.getValue(), value);
+            }
+        }
+        return Map.copyOf(mappedProperties);
     }
 
     private void warnForOrphanInfoTags(RecSyncTransaction transaction, Map<Integer, Map<String, String>> recordInfos) {
@@ -406,6 +429,40 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         return Set.copyOf(parsed);
     }
 
+    /**
+     * Parses mappings in the format "ENV_VAR:PropertyName,OTHER_ENV:OtherProperty".
+     * @param configuredMappings the raw input string containing environment variable to property name mappings
+     * @return a map of environment variable name to channel property name for each valid mapping parsed from the input string
+     */
+    private static Map<String, String> parseEnvironmentVarMappings(String configuredMappings) {
+        String normalizedMappings = normalized(configuredMappings);
+        if (normalizedMappings == null) {
+            return Map.of();
+        }
+
+        Map<String, String> parsed = new LinkedHashMap<>();
+        for (String token : normalizedMappings.split(",")) {
+            String mapping = normalized(token);
+            if (mapping == null) {
+                continue;
+            }
+            int separatorIndex = mapping.indexOf(':');
+            if (separatorIndex <= 0 || separatorIndex >= mapping.length() - 1) {
+                throw new IllegalArgumentException(
+                        "Invalid environment variable mapping '" + mapping + "'. Expected format ENV:PropertyName");
+            }
+            String envVar = normalized(mapping.substring(0, separatorIndex));
+            String propertyName = normalized(mapping.substring(separatorIndex + 1));
+            if (envVar == null || propertyName == null) {
+                throw new IllegalArgumentException(
+                        "Invalid environment variable mapping '" + mapping + "'. Expected format ENV:PropertyName");
+            }
+            // Keep the last mapping if a variable appears multiple times.
+            parsed.put(envVar, propertyName);
+        }
+        return Map.copyOf(parsed);
+    }
+
     // Shared metadata copied into every channel emitted for a single commit.
     private record ChannelContext(
             String hostName,
@@ -414,7 +471,8 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             String iocIp,
             String timestamp,
             String caPort,
-            String pvaPort
+            String pvaPort,
+            Map<String, String> mappedEnvironmentProperties
     ) {
     }
 
