@@ -1,10 +1,7 @@
 package org.phoebus.recceiver;
 
 import org.junit.jupiter.api.Test;
-import org.phoebus.recceiver.spi.AddInfoMessage;
-import org.phoebus.recceiver.spi.AddRecordMessage;
 import org.phoebus.recceiver.spi.ConnectionClosedEvent;
-import org.phoebus.recceiver.spi.DelRecordMessage;
 import org.phoebus.recceiver.spi.RecSyncProcessor;
 import org.phoebus.recceiver.spi.RecSyncProcessorDispatcher;
 import org.phoebus.recceiver.spi.RecSyncTransaction;
@@ -26,7 +23,7 @@ class RecSyncProcessorDispatcherTest {
         dispatcher.dispatchCommit(transaction);
 
         assertEquals(1, capturing.commits.size());
-        assertEquals("127.0.0.1", capturing.commits.get(0).sourceAddress());
+        assertEquals("127.0.0.1", capturing.commits.getFirst().sourceAddress());
     }
 
     @Test
@@ -38,12 +35,24 @@ class RecSyncProcessorDispatcherTest {
         dispatcher.dispatchConnectionClosed(new ConnectionClosedEvent("127.0.0.1", "eof"));
 
         assertEquals(1, capturing.closedEvents.size());
-        assertEquals("eof", capturing.closedEvents.get(0).reason());
+        assertEquals("eof", capturing.closedEvents.getFirst().reason());
+    }
+
+    @Test
+    void destroyAllProcessorsContinuesAfterProcessorFailure() {
+        CapturingProcessor capturing = new CapturingProcessor();
+        FailingProcessor failing = new FailingProcessor();
+        RecSyncProcessorDispatcher dispatcher = new RecSyncProcessorDispatcher(List.of(failing, capturing));
+
+        dispatcher.destroyAllProcessors();
+
+        assertEquals(1, capturing.destroyCalls);
     }
 
     private static class CapturingProcessor implements RecSyncProcessor {
         private final List<RecSyncTransaction> commits = new ArrayList<>();
         private final List<ConnectionClosedEvent> closedEvents = new ArrayList<>();
+        private int destroyCalls;
 
         @Override
         public void commit(RecSyncTransaction transaction) {
@@ -53,6 +62,11 @@ class RecSyncProcessorDispatcherTest {
         @Override
         public void connectionClosed(ConnectionClosedEvent event) {
             closedEvents.add(event);
+        }
+
+        @Override
+        public void destroy() {
+            destroyCalls++;
         }
     }
 
@@ -64,6 +78,11 @@ class RecSyncProcessorDispatcherTest {
 
         @Override
         public void connectionClosed(ConnectionClosedEvent event) {
+            throw new RuntimeException("boom");
+        }
+
+        @Override
+        public void destroy() {
             throw new RuntimeException("boom");
         }
     }

@@ -356,6 +356,143 @@ class CFRecSyncProcessorTest {
         assertEquals("/ioc/demo", alias.property("WorkingDirectory"));
     }
 
+    @Test
+    void initParsesDeleteOnShutdownConfiguration() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+
+        // Test default value (true)
+        RecSyncProcessor initialized = processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder"
+        ));
+        assertNotNull(initialized);
+
+        // Test explicit false value
+        TestProcessor processorFalse = new TestProcessor(store);
+        initialized = processorFalse.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.delete-on-shutdown", "false"
+        ));
+        assertNotNull(initialized);
+    }
+
+    @Test
+    void registersIocInShutdownRegistryOnInitialCommit() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+        processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder"
+        ));
+
+        RecSyncTransaction transaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(new AddRecordMessage(10, 0, 3, 6, "ai", "pv:one")),
+                List.of(),
+                List.of(),
+                Map.of(
+                        CFRecSyncProcessor.IOCNAME_KEY, "ioc-a",
+                        CFRecSyncProcessor.HOSTNAME_KEY, "host-a"
+                ),
+                true,  // initial = true
+                true   // connected = true
+        );
+
+        processor.commit(transaction);
+
+        // Verify that the IOC was registered
+        assertEquals(1, processor.getIocRegistrySize());
+    }
+
+    @Test
+    void destroyMarksChannelsInactiveWhenDeleteOnShutdownFalse() {
+        TestStore store = new TestStore();
+        store.findByPropertyResult = Map.of(
+                "pv:one", new ChannelFinderChannel("pv:one", "owner1", Map.of(
+                        CFRecSyncProcessor.IOC_ID_PROPERTY, "127.0.0.1:5070",
+                        CFRecSyncProcessor.PV_STATUS_PROPERTY, CFRecSyncProcessor.ACTIVE
+                ))
+        );
+
+        TestProcessor processor = new TestProcessor(store);
+        processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.delete-on-shutdown", "false"
+        ));
+
+        // Register an IOC
+        RecSyncTransaction transaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(new AddRecordMessage(10, 0, 3, 6, "ai", "pv:one")),
+                List.of(),
+                List.of(),
+                Map.of(
+                        CFRecSyncProcessor.IOCNAME_KEY, "ioc-a",
+                        CFRecSyncProcessor.HOSTNAME_KEY, "host-a"
+                ),
+                true,
+                true
+        );
+        processor.commit(transaction);
+
+        store.updatedChannels.clear();
+
+        // Destroy should mark channels as inactive, not delete them
+        processor.destroy();
+
+        // Verify channels were updated (not deleted)
+        assertEquals(1, store.updatedChannels.size());
+        ChannelFinderChannel updated = store.updatedChannels.get(0);
+        assertEquals(CFRecSyncProcessor.INACTIVE, updated.property(CFRecSyncProcessor.PV_STATUS_PROPERTY));
+        assertEquals(0, store.deletedChannelNames.size());
+    }
+
+    @Test
+    void destroyDeletesChannelsWhenDeleteOnShutdownTrue() {
+        TestStore store = new TestStore();
+        store.findByPropertyResult = Map.of(
+                "pv:one", new ChannelFinderChannel("pv:one", "owner1", Map.of(
+                        CFRecSyncProcessor.IOC_ID_PROPERTY, "127.0.0.1:5070",
+                        CFRecSyncProcessor.PV_STATUS_PROPERTY, CFRecSyncProcessor.ACTIVE
+                ))
+        );
+
+        TestProcessor processor = new TestProcessor(store);
+        processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.delete-on-shutdown", "true"
+        ));
+
+        // Register an IOC
+        RecSyncTransaction transaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(new AddRecordMessage(10, 0, 3, 6, "ai", "pv:one")),
+                List.of(),
+                List.of(),
+                Map.of(
+                        CFRecSyncProcessor.IOCNAME_KEY, "ioc-a",
+                        CFRecSyncProcessor.HOSTNAME_KEY, "host-a"
+                ),
+                true,
+                true
+        );
+        processor.commit(transaction);
+
+        store.updatedChannels.clear();
+
+        // Destroy should delete channels
+        processor.destroy();
+
+        // Verify channels were deleted, not updated
+        assertEquals(0, store.updatedChannels.size());
+        assertEquals(1, store.deletedChannelNames.size());
+        assertTrue(store.deletedChannelNames.contains("pv:one"));
+    }
+
     private static final class TestProcessor extends CFRecSyncProcessor {
         private final ChannelFinderStore store;
 
@@ -367,12 +504,19 @@ class CFRecSyncProcessorTest {
         protected ChannelFinderStore createStore(String serviceUrl, String username, String password) {
             return store;
         }
+
+        // Test helper to check IOC registry size
+        int getIocRegistrySize() {
+            return iocRegistrySize();
+        }
     }
 
     private static final class TestStore implements ChannelFinderStore {
         private String ensuredOwner;
         private Set<String> ensuredProperties = Set.of();
         private final List<ChannelFinderChannel> updatedChannels = new ArrayList<>();
+        private final List<String> deletedChannelNames = new ArrayList<>();
+        private Map<String, ChannelFinderChannel> findByPropertyResult = Map.of();
 
         @Override
         public Map<String, ChannelFinderChannel> findByNames(Set<String> channelNames) {
@@ -381,7 +525,7 @@ class CFRecSyncProcessorTest {
 
         @Override
         public Map<String, ChannelFinderChannel> findByProperty(String propertyName, String propertyValue) {
-            return Map.of();
+            return findByPropertyResult;
         }
 
         @Override
@@ -391,7 +535,7 @@ class CFRecSyncProcessorTest {
 
         @Override
         public void deleteChannels(Collection<String> channelNames) {
-            // not needed for this test store
+            deletedChannelNames.addAll(channelNames);
         }
 
         @Override
