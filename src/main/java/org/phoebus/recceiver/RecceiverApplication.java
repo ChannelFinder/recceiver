@@ -9,11 +9,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.PropertySource;
-import org.springframework.context.event.ContextClosedEvent;
 
 import javax.annotation.PreDestroy;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -23,7 +23,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -104,27 +103,18 @@ public class RecceiverApplication implements CommandLineRunner {
     private String cfEnvironmentVars;
 
 
-
-    private static ConfigurableApplicationContext context;
-
     private final ScheduledExecutorService udpAnnouncerService = Executors.newScheduledThreadPool(1);
     private static int serverKey;
     private RecSyncProcessorDispatcher processorDispatcher;
+    private volatile boolean running = true;
 
-    public static void main(String[] args) throws InterruptedException {
-        context = SpringApplication.run(RecceiverApplication.class, args);
+    private Selector selector;
+    private ServerSocketChannel serverSocket;
+
+    public static void main(String[] args) {
+        ConfigurableApplicationContext context = SpringApplication.run(RecceiverApplication.class, args);
         log.info("Starting Recceiver");
-
-        context.addApplicationListener(event -> {
-            log.fine(event.toString());
-            if (event instanceof ContextClosedEvent) {
-                log.info("Close event.. need to cleanup and shutdown");
-            }
-        });
-
-        final CountDownLatch closeLatch = context.getBean(CountDownLatch.class);
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> closeLatch.countDown()));
-        closeLatch.await();
+        context.addApplicationListener(event -> log.fine(event.toString()));
     }
 
     @Override
@@ -135,9 +125,9 @@ public class RecceiverApplication implements CommandLineRunner {
         Random rand = new Random();
         serverKey = rand.nextInt();
 
-        Selector selector = Selector.open();
+        selector = Selector.open();
         // Create the TCP listener
-        ServerSocketChannel serverSocket = ServerSocketChannel.open();
+        serverSocket = ServerSocketChannel.open();
         serverSocket.bind(new InetSocketAddress(tcpBindAddress, tcpPort));
         serverSocket.configureBlocking(false);
         serverSocket.register(selector, SelectionKey.OP_ACCEPT);
@@ -151,24 +141,27 @@ public class RecceiverApplication implements CommandLineRunner {
         udpAnnouncerService.scheduleAtFixedRate(announcer, 0, Math.round(announceInterval), TimeUnit.SECONDS);
         log.info("started announcing...");
 
+        try {
+            while (running) {
+                selector.select();
+                Set<SelectionKey> selectedKeys = selector.selectedKeys();
+                Iterator<SelectionKey> iter = selectedKeys.iterator();
+                while (iter.hasNext()) {
 
-        while (true) {
-            selector.select();
-            Set<SelectionKey> selectedKeys = selector.selectedKeys();
-            Iterator<SelectionKey> iter = selectedKeys.iterator();
-            while (iter.hasNext()) {
+                    SelectionKey key = iter.next();
+                    if (log.isLoggable(Level.FINER)) {
+                        log.finer("selection key valid=" + key.isValid() + " channel=" + key.channel());
+                    }
 
-                SelectionKey key = iter.next();
-                if (log.isLoggable(Level.FINER)) {
-                    log.finer("selection key valid=" + key.isValid() + " channel=" + key.channel());
+                    if (key.isAcceptable()) {
+                        register(serverSocket);
+                        log.finer("accepted connection via selector=" + selector + " server=" + serverSocket);
+                    }
+                    iter.remove();
                 }
-
-                if (key.isAcceptable()) {
-                    register(serverSocket);
-                    log.finer("accepted connection via selector=" + selector + " server=" + serverSocket);
-                }
-                iter.remove();
             }
+        } catch (ClosedSelectorException ignored) {
+            // Selector is closed during shutdown; treat as normal termination.
         }
 
     }
@@ -218,11 +211,6 @@ public class RecceiverApplication implements CommandLineRunner {
         return options;
     }
 
-    @Bean
-    public CountDownLatch closeLatch() {
-        return new CountDownLatch(1);
-    }
-
     /**
      * Called by Spring during application shutdown via @PreDestroy lifecycle.
      * Triggers cleanup of all registered RecSyncProcessors (e.g., CFRecSyncProcessor)
@@ -231,12 +219,32 @@ public class RecceiverApplication implements CommandLineRunner {
     @PreDestroy
     public void onShutdown() {
         log.info("RecceiverApplication shutdown: calling destroy on all processors");
+        running = false;
+
+        // Wake the blocking select() call so the command runner can exit cleanly.
+        if (selector != null) {
+            selector.wakeup();
+        }
+
+        udpAnnouncerService.shutdown();
+
         try {
             if (processorDispatcher != null) {
                 processorDispatcher.destroyAllProcessors();
             }
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error during processor shutdown", e);
+        }
+
+        try {
+            if (serverSocket != null) {
+                serverSocket.close();
+            }
+            if (selector != null) {
+                selector.close();
+            }
+        } catch (IOException e) {
+            log.log(Level.WARNING, "Error while closing network resources", e);
         }
     }
 

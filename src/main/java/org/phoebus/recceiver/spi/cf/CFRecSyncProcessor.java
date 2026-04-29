@@ -379,10 +379,12 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
 
     @Override
     public void destroy() {
+        System.err.println("[CFRecSyncProcessor] destroy: cleaning up tracked IOCs on shutdown");
         log.info("[CFRecSyncProcessor] destroy: cleaning up tracked IOCs on shutdown");
         try {
             cleanupTrackedIocs();
         } catch (Exception e) {
+            System.err.println("[CFRecSyncProcessor] error during shutdown cleanup: " + e.getMessage());
             log.severe("[CFRecSyncProcessor] error during shutdown cleanup: " + e.getMessage());
         }
     }
@@ -395,11 +397,14 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
      */
     private void cleanupTrackedIocs() {
         if (iocRegistry.isEmpty()) {
+            System.err.println("[CFRecSyncProcessor] no IOCs to clean up on shutdown");
             log.info("[CFRecSyncProcessor] no IOCs to clean up on shutdown");
             return;
         }
 
-        log.info(() -> "[CFRecSyncProcessor] cleaning up " + iocRegistry.size() + " tracked IOCs");
+        String msg = "[CFRecSyncProcessor] cleaning up " + iocRegistry.size() + " tracked IOCs";
+        System.err.println(msg);
+        log.info(msg);
 
         // Iterate over a copy of the registry keys to avoid ConcurrentModificationException
         Set<String> iocIds = new HashSet<>(iocRegistry.keySet());
@@ -407,7 +412,9 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             try {
                 cleanupIoc(iocId);
             } catch (Exception e) {
-                log.warning(() -> "[CFRecSyncProcessor] error cleaning up IOC " + iocId + ": " + e.getMessage());
+                String errMsg = "[CFRecSyncProcessor] error cleaning up IOC " + iocId + ": " + e.getMessage();
+                System.err.println(errMsg);
+                log.warning(() -> errMsg);
             }
         }
     }
@@ -423,18 +430,26 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private void cleanupIoc(String iocId) {
         Map<String, ChannelFinderChannel> existing = store.findByProperty(IOC_ID_PROPERTY, iocId);
         if (existing.isEmpty()) {
-            log.info(() -> "[CFRecSyncProcessor] no channels found for IOC " + iocId);
+            String msg = "[CFRecSyncProcessor] no channels found for IOC " + iocId;
+            System.err.println(msg);
+            log.info(msg);
             iocRegistry.remove(iocId);
             return;
         }
 
-        log.info(() -> "[CFRecSyncProcessor] found " + existing.size() + " channels for IOC " + iocId);
+        String foundMsg = "[CFRecSyncProcessor] found " + existing.size() + " channels for IOC " + iocId;
+        System.err.println(foundMsg);
+        log.info(foundMsg);
 
         if (deleteOnShutdown) {
-            log.info(() -> "[CFRecSyncProcessor] deleting " + existing.size() + " channels for IOC " + iocId);
+            String deleteMsg = "[CFRecSyncProcessor] deleting " + existing.size() + " channels for IOC " + iocId;
+            System.err.println(deleteMsg);
+            log.info(deleteMsg);
             store.deleteChannels(existing.keySet());
         } else {
-            log.info(() -> "[CFRecSyncProcessor] marking " + existing.size() + " channels as inactive for IOC " + iocId);
+            String inactiveMsg = "[CFRecSyncProcessor] marking " + existing.size() + " channels as inactive for IOC " + iocId;
+            System.err.println(inactiveMsg);
+            log.info(inactiveMsg);
             String now = OffsetDateTime.now().toString();
             Collection<ChannelFinderChannel> inactiveChannels = new ArrayList<>();
             for (ChannelFinderChannel channel : existing.values()) {
