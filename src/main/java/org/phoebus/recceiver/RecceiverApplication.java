@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.PropertySource;
 import org.springframework.context.event.ContextClosedEvent;
 
+import javax.annotation.PreDestroy;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.channels.SelectionKey;
@@ -89,6 +90,9 @@ public class RecceiverApplication implements CommandLineRunner {
 
     @Value("${recceiver.cf.delete-on-clean:false}")
     private String cfDeleteOnClean;
+
+    @Value("${recceiver.cf.delete-on-shutdown:true}")
+    private String cfDeleteOnShutdown;
 
     @Value("${recceiver.cf.alias-enabled:true}")
     private String cfAliasEnabled;
@@ -207,6 +211,7 @@ public class RecceiverApplication implements CommandLineRunner {
         options.put("recceiver.cf.username", cfUsername);
         options.put("recceiver.cf.password", cfPassword);
         options.put("recceiver.cf.delete-on-clean", cfDeleteOnClean);
+        options.put("recceiver.cf.delete-on-shutdown", cfDeleteOnShutdown);
         options.put("recceiver.cf.alias-enabled", cfAliasEnabled);
         options.put("recceiver.cf.infotags", cfInfoTags);
         options.put("recceiver.cf.environment-vars", cfEnvironmentVars);
@@ -216,6 +221,23 @@ public class RecceiverApplication implements CommandLineRunner {
     @Bean
     public CountDownLatch closeLatch() {
         return new CountDownLatch(1);
+    }
+
+    /**
+     * Called by Spring during application shutdown via @PreDestroy lifecycle.
+     * Triggers cleanup of all registered RecSyncProcessors (e.g., CFRecSyncProcessor)
+     * to handle IOC channel cleanup in ChannelFinder.
+     */
+    @PreDestroy
+    public void onShutdown() {
+        log.info("RecceiverApplication shutdown: calling destroy on all processors");
+        try {
+            if (processorDispatcher != null) {
+                processorDispatcher.destroyAllProcessors();
+            }
+        } catch (Exception e) {
+            log.log(Level.SEVERE, "Error during processor shutdown", e);
+        }
     }
 
 }

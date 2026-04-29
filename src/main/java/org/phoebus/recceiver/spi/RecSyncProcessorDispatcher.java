@@ -26,7 +26,7 @@ public class RecSyncProcessorDispatcher {
             try {
                 processor.commit(transaction);
             } catch (Exception e) {
-                log.log(Level.WARNING, "Processor commit failed: " + processor.getClass().getName(), e);
+                log.log(Level.WARNING, e, () -> "Processor commit failed: " + processor.getClass().getName());
             }
         }
     }
@@ -36,7 +36,23 @@ public class RecSyncProcessorDispatcher {
             try {
                 processor.connectionClosed(event);
             } catch (Exception e) {
-                log.log(Level.WARNING, "Processor connectionClosed failed: " + processor.getClass().getName(), e);
+                log.log(Level.WARNING, e, () -> "Processor connectionClosed failed: " + processor.getClass().getName());
+            }
+        }
+    }
+
+    /**
+     * Calls destroy() on all registered processors during application shutdown.
+     * This allows processors to clean up resources and perform shutdown-specific actions
+     * (e.g., CFRecSyncProcessor marks IOC channels as inactive or deletes them).
+     */
+    public void destroyAllProcessors() {
+        log.info(() -> "Destroying all " + processors.size() + " registered processors");
+        for (RecSyncProcessor processor : processors) {
+            try {
+                processor.destroy();
+            } catch (Exception e) {
+                log.log(Level.WARNING, e, () -> "Processor destroy failed: " + processor.getClass().getName());
             }
         }
     }
