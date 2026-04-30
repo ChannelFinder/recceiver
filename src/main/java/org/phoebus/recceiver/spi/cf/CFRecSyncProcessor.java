@@ -210,6 +210,12 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             trackIocRecordState(iocId, transaction);
         }
 
+        // A disconnected transaction indicates the IOC is offline; clean all IOC channels.
+        if (iocId != null && !iocId.isBlank() && !transaction.connected()) {
+            connectionClosed(new ConnectionClosedEvent(transaction.sourceAddress(), "commit connected=false"));
+            return;
+        }
+
         Collection<ChannelFinderChannel> channels = buildChannels(transaction);
         if (!channels.isEmpty()) {
             store.updateChannels(channels);
