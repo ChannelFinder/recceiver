@@ -3,6 +3,7 @@ package org.phoebus.recceiver;
 import org.junit.jupiter.api.Test;
 import org.phoebus.recceiver.spi.AddInfoMessage;
 import org.phoebus.recceiver.spi.AddRecordMessage;
+import org.phoebus.recceiver.spi.DelRecordMessage;
 import org.phoebus.recceiver.spi.RecSyncProcessor;
 import org.phoebus.recceiver.spi.RecSyncTransaction;
 import org.phoebus.recceiver.spi.cf.CFRecSyncProcessor;
@@ -11,6 +12,7 @@ import org.phoebus.recceiver.spi.cf.ChannelFinderStore;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -493,6 +495,107 @@ class CFRecSyncProcessorTest {
         assertTrue(store.deletedChannelNames.contains("pv:one"));
     }
 
+    @Test
+    void commitDeletesPrimaryAndAliasWhenRecordIsDeletedAndDeleteOnCleanTrue() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+        processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.alias-enabled", "true",
+                "recceiver.cf.delete-on-clean", "true"
+        ));
+
+        RecSyncTransaction addTransaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(
+                        new AddRecordMessage(10, 0, 3, 6, "ai", "pv:one"),
+                        new AddRecordMessage(10, 1, 0, 12, "", "pv:one:alias")
+                ),
+                List.of(),
+                List.of(),
+                Map.of(
+                        CFRecSyncProcessor.IOCNAME_KEY, "ioc-a",
+                        CFRecSyncProcessor.HOSTNAME_KEY, "host-a"
+                ),
+                true,
+                true
+        );
+        processor.commit(addTransaction);
+
+        store.deletedChannelNames.clear();
+        store.findByNamesResult = Map.of(
+                "pv:one", new ChannelFinderChannel("pv:one", "owner", Map.of()),
+                "pv:one:alias", new ChannelFinderChannel("pv:one:alias", "owner", Map.of())
+        );
+
+        RecSyncTransaction deleteTransaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(),
+                List.of(new DelRecordMessage(10)),
+                List.of(),
+                Map.of(),
+                false,
+                true
+        );
+        processor.commit(deleteTransaction);
+
+        assertEquals(2, store.deletedChannelNames.size());
+        assertTrue(store.deletedChannelNames.contains("pv:one"));
+        assertTrue(store.deletedChannelNames.contains("pv:one:alias"));
+    }
+
+    @Test
+    void commitMarksRecordInactiveWhenDeletedAndDeleteOnCleanFalse() {
+        TestStore store = new TestStore();
+        TestProcessor processor = new TestProcessor(store);
+        processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.delete-on-clean", "false"
+        ));
+
+        RecSyncTransaction addTransaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(new AddRecordMessage(10, 0, 3, 6, "ai", "pv:one")),
+                List.of(),
+                List.of(),
+                Map.of(
+                        CFRecSyncProcessor.IOCNAME_KEY, "ioc-a",
+                        CFRecSyncProcessor.HOSTNAME_KEY, "host-a"
+                ),
+                true,
+                true
+        );
+        processor.commit(addTransaction);
+
+        store.updatedChannels.clear();
+        store.findByNamesResult = Map.of(
+                "pv:one", new ChannelFinderChannel("pv:one", "owner", Map.of(
+                        CFRecSyncProcessor.PV_STATUS_PROPERTY, CFRecSyncProcessor.ACTIVE,
+                        CFRecSyncProcessor.TIME_PROPERTY, "old-time"
+                ))
+        );
+
+        RecSyncTransaction deleteTransaction = new RecSyncTransaction(
+                "/127.0.0.1:5070",
+                List.of(),
+                List.of(new DelRecordMessage(10)),
+                List.of(),
+                Map.of(),
+                false,
+                true
+        );
+        processor.commit(deleteTransaction);
+
+        assertEquals(1, store.updatedChannels.size());
+        ChannelFinderChannel updated = store.updatedChannels.get(0);
+        assertEquals("pv:one", updated.name());
+        assertEquals(CFRecSyncProcessor.INACTIVE, updated.property(CFRecSyncProcessor.PV_STATUS_PROPERTY));
+        assertNotNull(updated.property(CFRecSyncProcessor.TIME_PROPERTY));
+        assertEquals(0, store.deletedChannelNames.size());
+    }
+
     private static final class TestProcessor extends CFRecSyncProcessor {
         private final ChannelFinderStore store;
 
@@ -516,11 +619,19 @@ class CFRecSyncProcessorTest {
         private Set<String> ensuredProperties = Set.of();
         private final List<ChannelFinderChannel> updatedChannels = new ArrayList<>();
         private final List<String> deletedChannelNames = new ArrayList<>();
+        private Map<String, ChannelFinderChannel> findByNamesResult = Map.of();
         private Map<String, ChannelFinderChannel> findByPropertyResult = Map.of();
 
         @Override
         public Map<String, ChannelFinderChannel> findByNames(Set<String> channelNames) {
-            return Map.of();
+            Map<String, ChannelFinderChannel> result = new LinkedHashMap<>();
+            for (String channelName : channelNames) {
+                ChannelFinderChannel channel = findByNamesResult.get(channelName);
+                if (channel != null) {
+                    result.put(channelName, channel);
+                }
+            }
+            return Map.copyOf(result);
         }
 
         @Override

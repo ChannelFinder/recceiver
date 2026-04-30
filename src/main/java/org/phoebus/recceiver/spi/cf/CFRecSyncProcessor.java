@@ -87,6 +87,8 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     // Key = iocId (e.g., "host:port"), Value = IocInfo metadata
     // Used during shutdown to clean up channels belonging to tracked IOCs.
     private final Map<String, IocInfo> iocRegistry = new ConcurrentHashMap<>();
+    // Tracks recId -> channel names so delete messages (which only carry recId) can be resolved.
+    private final Map<String, IocChannelState> iocChannelState = new ConcurrentHashMap<>();
 
     public CFRecSyncProcessor() {
         // Required by ServiceLoader.
@@ -144,9 +146,10 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
                 + " recordInfos=" + transaction.recordInfosToAdd().size()
                 + " clientInfos=" + transaction.clientInfos().size());
 
+        String iocId = resolveIocId(transaction);
+
         // Register this IOC in the registry for shutdown cleanup tracking.
         if (transaction.initial()) {
-            String iocId = resolveIocId(transaction);
             if (iocId != null && !iocId.isBlank()) {
                 Map<String, String> clientInfos = transaction.clientInfos();
                 IocInfo iocInfo = new IocInfo(
@@ -164,10 +167,82 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             }
         }
 
+        if (iocId != null && !iocId.isBlank()) {
+            trackIocRecordState(iocId, transaction);
+        }
+
         Collection<ChannelFinderChannel> channels = buildChannels(transaction);
         if (!channels.isEmpty()) {
             store.updateChannels(channels);
         }
+
+        if (iocId != null && !iocId.isBlank()) {
+            cleanupDeletedRecordChannels(iocId, transaction.recordsToDelete());
+        }
+    }
+
+    private void trackIocRecordState(String iocId, RecSyncTransaction transaction) {
+        IocChannelState state = iocChannelState.computeIfAbsent(iocId, ignored -> new IocChannelState());
+        for (AddRecordMessage addRecordMessage : transaction.recordsToAdd().values()) {
+            if (addRecordMessage.aType() == 0) {
+                state.primaryRecordNamesByRecId.put(addRecordMessage.recId(), addRecordMessage.recordName());
+            }
+        }
+        for (Map.Entry<Integer, List<String>> aliasEntry : transaction.aliases().entrySet()) {
+            List<String> aliases = aliasEntry.getValue().stream()
+                    .filter(alias -> alias != null && !alias.isBlank())
+                    .toList();
+            if (!aliases.isEmpty()) {
+                state.aliasNamesByRecId.put(aliasEntry.getKey(), aliases);
+            }
+        }
+    }
+
+    private void cleanupDeletedRecordChannels(String iocId, Set<Integer> deletedRecIds) {
+        if (deletedRecIds.isEmpty()) {
+            return;
+        }
+
+        IocChannelState state = iocChannelState.get(iocId);
+        if (state == null) {
+            return;
+        }
+
+        Set<String> channelNamesToCleanup = new LinkedHashSet<>();
+        for (Integer recId : deletedRecIds) {
+            String primaryName = state.primaryRecordNamesByRecId.remove(recId);
+            if (primaryName != null) {
+                channelNamesToCleanup.add(primaryName);
+            }
+            List<String> aliases = state.aliasNamesByRecId.remove(recId);
+            if (aliases != null) {
+                channelNamesToCleanup.addAll(aliases);
+            }
+        }
+
+        if (channelNamesToCleanup.isEmpty()) {
+            return;
+        }
+
+        Map<String, ChannelFinderChannel> existing = store.findByNames(channelNamesToCleanup);
+        if (existing.isEmpty()) {
+            return;
+        }
+
+        if (deleteOnClean) {
+            store.deleteChannels(existing.keySet());
+            return;
+        }
+
+        String now = OffsetDateTime.now().toString();
+        Collection<ChannelFinderChannel> inactiveChannels = new ArrayList<>();
+        for (ChannelFinderChannel channel : existing.values()) {
+            Map<String, String> properties = new LinkedHashMap<>(channel.properties());
+            properties.put(PV_STATUS_PROPERTY, INACTIVE);
+            properties.put(TIME_PROPERTY, now);
+            inactiveChannels.add(new ChannelFinderChannel(channel.name(), channel.owner(), properties));
+        }
+        store.updateChannels(inactiveChannels);
     }
 
     private Collection<ChannelFinderChannel> buildChannels(RecSyncTransaction transaction) {
@@ -361,6 +436,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         if (deleteOnClean) {
             store.deleteChannels(existing.keySet());
             iocRegistry.remove(iocId);
+            iocChannelState.remove(iocId);
             return;
         }
 
@@ -374,6 +450,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         }
         store.updateChannels(inactiveChannels);
         iocRegistry.remove(iocId);
+        iocChannelState.remove(iocId);
     }
 
     @Override
@@ -433,6 +510,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             System.err.println(msg);
             log.info(msg);
             iocRegistry.remove(iocId);
+            iocChannelState.remove(iocId);
             return;
         }
 
@@ -461,6 +539,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         }
 
         iocRegistry.remove(iocId);
+        iocChannelState.remove(iocId);
     }
 
 
@@ -607,6 +686,11 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             String owner,
             String connectedAt
     ) {
+    }
+
+    private static final class IocChannelState {
+        private final Map<Integer, String> primaryRecordNamesByRecId = new LinkedHashMap<>();
+        private final Map<Integer, List<String>> aliasNamesByRecId = new LinkedHashMap<>();
     }
 
     private static boolean isEnabled(Map<String, String> options) {
