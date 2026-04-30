@@ -135,6 +135,60 @@ class CFRecSyncProcessorTest {
     }
 
     @Test
+    void initCleanOnStartupFalseMarksActiveChannelsInactive() {
+        TestStore store = new TestStore();
+        store.findByPropertyResult = Map.of(
+                "pv:active", new ChannelFinderChannel("pv:active", "owner1", Map.of(
+                        CFRecSyncProcessor.PV_STATUS_PROPERTY, CFRecSyncProcessor.ACTIVE,
+                        CFRecSyncProcessor.TIME_PROPERTY, "old-time"
+                )),
+                "pv:inactive", new ChannelFinderChannel("pv:inactive", "owner1", Map.of(
+                        CFRecSyncProcessor.PV_STATUS_PROPERTY, CFRecSyncProcessor.INACTIVE,
+                        CFRecSyncProcessor.TIME_PROPERTY, "old-time"
+                ))
+        );
+        TestProcessor processor = new TestProcessor(store);
+
+        RecSyncProcessor initialized = processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.clean-on-startup", "false"
+        ));
+
+        assertNotNull(initialized);
+        assertEquals(1, store.updatedChannels.size());
+        assertEquals("pv:active", store.updatedChannels.get(0).name());
+        assertEquals(CFRecSyncProcessor.INACTIVE,
+                store.updatedChannels.get(0).property(CFRecSyncProcessor.PV_STATUS_PROPERTY));
+        assertEquals(0, store.deletedChannelNames.size());
+    }
+
+    @Test
+    void initCleanOnStartupTrueDeletesActiveChannels() {
+        TestStore store = new TestStore();
+        store.findByPropertyResult = Map.of(
+                "pv:active", new ChannelFinderChannel("pv:active", "owner1", Map.of(
+                        CFRecSyncProcessor.PV_STATUS_PROPERTY, CFRecSyncProcessor.ACTIVE
+                )),
+                "pv:inactive", new ChannelFinderChannel("pv:inactive", "owner1", Map.of(
+                        CFRecSyncProcessor.PV_STATUS_PROPERTY, CFRecSyncProcessor.INACTIVE
+                ))
+        );
+        TestProcessor processor = new TestProcessor(store);
+
+        RecSyncProcessor initialized = processor.init("cf", Map.of(
+                "recceiver.cf.enabled", "true",
+                "recceiver.cf.service-url", "http://localhost:9090/ChannelFinder",
+                "recceiver.cf.clean-on-startup", "true"
+        ));
+
+        assertNotNull(initialized);
+        assertEquals(0, store.updatedChannels.size());
+        assertEquals(1, store.deletedChannelNames.size());
+        assertTrue(store.deletedChannelNames.contains("pv:active"));
+    }
+
+    @Test
     void initFailsOnMalformedEnvironmentVariableMapping() {
         TestStore store = new TestStore();
         TestProcessor processor = new TestProcessor(store);

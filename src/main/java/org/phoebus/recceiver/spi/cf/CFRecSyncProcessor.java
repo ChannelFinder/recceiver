@@ -29,6 +29,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final String USERNAME_KEY = "recceiver.cf.username";
     private static final String PASSWORD_KEY = "recceiver.cf.password";
     private static final String DELETE_ON_CLEAN_KEY = "recceiver.cf.delete-on-clean";
+    private static final String CLEAN_ON_STARTUP_KEY = "recceiver.cf.clean-on-startup";
     private static final String DELETE_ON_SHUTDOWN_KEY = "recceiver.cf.delete-on-shutdown";
     private static final String ALIAS_ENABLED_KEY = "recceiver.cf.alias-enabled";
     private static final String INFOTAGS_KEY = "recceiver.cf.infotags";
@@ -78,6 +79,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
 
     private ChannelFinderStore store;
     private boolean deleteOnClean;
+    private boolean cleanOnStartup;
     private boolean deleteOnShutdown;
     private boolean aliasEnabled;
     private Set<String> infoTagWhitelist = Set.of();
@@ -113,6 +115,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
 
         this.store = createStore(serviceUrl, username, password);
         this.deleteOnClean = Boolean.parseBoolean(options.getOrDefault(DELETE_ON_CLEAN_KEY, "false"));
+        this.cleanOnStartup = Boolean.parseBoolean(options.getOrDefault(CLEAN_ON_STARTUP_KEY, "false"));
         this.deleteOnShutdown = Boolean.parseBoolean(options.getOrDefault(DELETE_ON_SHUTDOWN_KEY, "true"));
         this.aliasEnabled = Boolean.parseBoolean(options.getOrDefault(ALIAS_ENABLED_KEY, "false"));
         this.infoTagWhitelist = parseInfoTags(options.get(INFOTAGS_KEY));
@@ -126,7 +129,43 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         requiredProperties.addAll(infoTagWhitelist);
         requiredProperties.addAll(environmentVarMappings.values());
         this.store.ensureProperties(requiredProperties, propertyOwner);
+
+        cleanupExistingActiveChannelsForRecceiver();
+
         return this;
+    }
+
+    private void cleanupExistingActiveChannelsForRecceiver() {
+        Map<String, ChannelFinderChannel> existing = store.findByProperty(RECCEIVER_ID_PROPERTY, RECCEIVER_ID);
+        if (existing.isEmpty()) {
+            return;
+        }
+
+        Map<String, ChannelFinderChannel> activeChannels = new LinkedHashMap<>();
+        for (Map.Entry<String, ChannelFinderChannel> channelEntry : existing.entrySet()) {
+            if (ACTIVE.equals(channelEntry.getValue().property(PV_STATUS_PROPERTY))) {
+                activeChannels.put(channelEntry.getKey(), channelEntry.getValue());
+            }
+        }
+        if (activeChannels.isEmpty()) {
+            return;
+        }
+
+        // Startup cleanup mode: false => mark inactive, true => delete.
+        if (cleanOnStartup) {
+            store.deleteChannels(activeChannels.keySet());
+            return;
+        }
+
+        String now = OffsetDateTime.now().toString();
+        Collection<ChannelFinderChannel> inactiveChannels = new ArrayList<>();
+        for (ChannelFinderChannel channel : activeChannels.values()) {
+            Map<String, String> properties = new LinkedHashMap<>(channel.properties());
+            properties.put(PV_STATUS_PROPERTY, INACTIVE);
+            properties.put(TIME_PROPERTY, now);
+            inactiveChannels.add(new ChannelFinderChannel(channel.name(), channel.owner(), properties));
+        }
+        store.updateChannels(inactiveChannels);
     }
 
     protected ChannelFinderStore createStore(String serviceUrl, String username, String password) {
