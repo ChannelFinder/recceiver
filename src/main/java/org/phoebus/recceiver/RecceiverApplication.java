@@ -90,6 +90,9 @@ public class RecceiverApplication implements CommandLineRunner {
     @Value("${recceiver.cf.delete-on-clean:false}")
     private String cfDeleteOnClean;
 
+    @Value("${recceiver.cf.clean-on-startup:false}")
+    private String cfCleanOnStartup;
+
     @Value("${recceiver.cf.delete-on-shutdown:true}")
     private String cfDeleteOnShutdown;
 
@@ -204,6 +207,7 @@ public class RecceiverApplication implements CommandLineRunner {
         options.put("recceiver.cf.username", cfUsername);
         options.put("recceiver.cf.password", cfPassword);
         options.put("recceiver.cf.delete-on-clean", cfDeleteOnClean);
+        options.put("recceiver.cf.clean-on-startup", cfCleanOnStartup);
         options.put("recceiver.cf.delete-on-shutdown", cfDeleteOnShutdown);
         options.put("recceiver.cf.alias-enabled", cfAliasEnabled);
         options.put("recceiver.cf.infotags", cfInfoTags);
