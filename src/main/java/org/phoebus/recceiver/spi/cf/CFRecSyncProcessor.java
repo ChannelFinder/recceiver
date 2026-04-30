@@ -20,7 +20,62 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
 /**
- * Publishes primary record adds to ChannelFinder.
+ * Publishes channel records from IOCs to a ChannelFinder service.
+ *
+ * <p><strong>Lifecycle:</strong>
+ * <ol>
+ *   <li><strong>Initialization ({@link #init(String, Map)}):</strong> Creates an HTTP store, parses
+ *       cleanup preferences, and ensures required properties exist in ChannelFinder. On startup,
+ *       applies cleanup to any existing active channels (configuration-driven).</li>
+ *   <li><strong>Commit ({@link #commit(RecSyncTransaction)}):</strong> For each transaction:
+ *       <ul>
+ *         <li>Registers new IOCs in the shutdown registry (on initial=true).</li>
+ *         <li>Tracks per-IOC record state for delete message resolution.</li>
+ *         <li>Builds channels from primary records and aliases (if enabled).</li>
+ *         <li>Updates channels in ChannelFinder.</li>
+ *         <li>Resolves and cleans up deleted records using tracked state.</li>
+ *       </ul>
+ *   </li>
+ *   <li><strong>Connection Loss ({@link #connectionClosed(ConnectionClosedEvent)}):</strong>
+ *       Immediately marks all IOC channels as inactive (or deletes them, depending on
+ *       {@link #deleteOnClean}).</li>
+ *   <li><strong>Shutdown ({@link #destroy()}):</strong> Iterates over all tracked IOCs and
+ *       either deletes or marks inactive, per {@link #deleteOnShutdown} preference.</li>
+ * </ol>
+ * </p>
+ *
+ * <p><strong>Cleanup Preferences (Booleans):</strong>
+ * <ul>
+ *   <li>{@code recceiver.cf.delete-on-clean} (false by default): When an IOC's connection is lost,
+ *       delete all its channels (true) or mark them inactive (false).</li>
+ *   <li>{@code recceiver.cf.clean-on-startup} (false by default): On init, delete all existing
+ *       active channels (true) or mark them inactive (false).</li>
+ *   <li>{@code recceiver.cf.delete-on-shutdown} (true by default): On application shutdown, delete
+ *       all tracked IOC channels (true) or mark them inactive (false).</li>
+ * </ul>
+ * </p>
+ *
+ * <p><strong>Channel State Tracking:</strong>
+ * <ul>
+ *   <li>{@code iocRegistry}: Maps iocId → IocInfo for all connected IOCs. Used during shutdown to
+ *       clean up tracked IOCs.</li>
+ *   <li>{@code iocChannelState}: Maps iocId → per-IOC record name maps. Allows delete messages
+ *       (which carry only recId, not channel names) to be resolved to actual channel names.</li>
+ * </ul>
+ * </p>
+ *
+ * <p><strong>Configuration:</strong>
+ * <ul>
+ *   <li>{@code recceiver.cf.enabled} (false by default): Enable this processor.</li>
+ *   <li>{@code recceiver.cf.service-url} (required if enabled): URL to the ChannelFinder service.</li>
+ *   <li>{@code recceiver.cf.username} / {@code recceiver.cf.password} (optional): HTTP basic auth.</li>
+ *   <li>{@code recceiver.cf.alias-enabled} (false by default): Publish alias records as separate channels.</li>
+ *   <li>{@code recceiver.cf.infotags} (optional): Comma/space-separated list of info tag names to
+ *       publish as ChannelFinder properties.</li>
+ *   <li>{@code recceiver.cf.environment-vars} (optional): Comma-separated mappings like
+ *       "RSRV_SERVER_PORT:caPort" to map environment variables to properties.</li>
+ * </ul>
+ * </p>
  */
 public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final Logger log = Logger.getLogger(CFRecSyncProcessor.class.getName());
@@ -135,6 +190,13 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         return this;
     }
 
+    /**
+     * On startup, cleans up any active channels previously published by this recceiver instance.
+     *
+     * <p>Finds all channels tagged with this recceiver's ID and filters for those with pvStatus=Active.
+     * If {@code cleanOnStartup} is true, deletes them. Otherwise, marks them as inactive with an
+     * updated timestamp. This prevents stale channels from lingering when the recceiver restarts.</p>
+     */
     private void cleanupExistingActiveChannelsForRecceiver() {
         Map<String, ChannelFinderChannel> existing = store.findByProperty(RECCEIVER_ID_PROPERTY, RECCEIVER_ID);
         if (existing.isEmpty()) {
@@ -151,7 +213,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             return;
         }
 
-        // Startup cleanup mode: false => mark inactive, true => delete.
+        // Startup cleanup mode: cleanOnStartup=true => delete, false => mark inactive.
         if (cleanOnStartup) {
             store.deleteChannels(activeChannels.keySet());
             return;
@@ -174,6 +236,27 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
                 : new ChannelFinderHttpStore(serviceUrl, username, password);
     }
 
+    /**
+     * Processes a transaction from an IOC, updating channel records in ChannelFinder.
+     *
+     * <p><strong>On initial=true (first commit):</strong> Registers the IOC in the shutdown
+     * registry so it can be cleaned up during shutdown.</p>
+     *
+     * <p><strong>On connected=false:</strong> Immediately triggers cleanup for this IOC's channels
+     * by calling {@link #connectionClosed(ConnectionClosedEvent)}. This allows graceful disconnect
+     * signaling within a transaction to be handled immediately.</p>
+     *
+     * <p><strong>Normal flow:</strong>
+     * <ol>
+     *   <li>Tracks per-IOC record state (recId → name mappings) for delete resolution.</li>
+     *   <li>Builds channels from primary records and aliases using the transaction metadata.</li>
+     *   <li>Updates all channels in ChannelFinder.</li>
+     *   <li>Resolves and cleans up records marked for deletion (using tracked state to map recId → names).</li>
+     * </ol>
+     * </p>
+     *
+     * @param transaction the transaction containing records, deletes, and metadata.
+     */
     @Override
     public void commit(RecSyncTransaction transaction) {
         log.info(() -> "[CFRecSyncProcessor] commit source=" + transaction.sourceAddress()
@@ -226,6 +309,22 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         }
     }
 
+    /**
+     * Tracks per-IOC record state (recId → names) for delete message resolution.
+     *
+     * <p>Populates two maps:
+     * <ul>
+     *   <li>{@code primaryRecordNamesByRecId}: Maps each primary record's recId to its name.</li>
+     *   <li>{@code aliasNamesByRecId}: Maps each record's recId to its list of aliases.</li>
+     * </ul>
+     * </p>
+     *
+     * <p>When delete messages arrive (which contain only recIds), this state allows mapping from
+     * recId back to the actual channel names to delete.</p>
+     *
+     * @param iocId the IOC's unique identifier (typically host:port).
+     * @param transaction the transaction containing current records and aliases.
+     */
     private void trackIocRecordState(String iocId, RecSyncTransaction transaction) {
         IocChannelState state = iocChannelState.computeIfAbsent(iocId, ignored -> new IocChannelState());
         for (AddRecordMessage addRecordMessage : transaction.recordsToAdd().values()) {
@@ -243,6 +342,16 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         }
     }
 
+    /**
+     * Resolves and cleans up deleted records using the tracked per-IOC state.
+     *
+     * <p>For each deleted recId, looks up the primary record name and aliases using the IOC's
+     * tracked state. Finds existing channels in ChannelFinder and either deletes them or marks
+     * them as inactive, per the {@link #deleteOnClean} preference.</p>
+     *
+     * @param iocId the IOC's unique identifier.
+     * @param deletedRecIds the set of recIds to clean up.
+     */
     private void cleanupDeletedRecordChannels(String iocId, Set<Integer> deletedRecIds) {
         if (deletedRecIds.isEmpty()) {
             return;
@@ -463,6 +572,21 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         }
     }
 
+    /**
+     * Handles connection loss for an IOC, marking its channels as inactive or deleting them.
+     *
+     * <p>Resolves the IOC's ID from the source address, finds all channels associated with that IOC
+     * (via the iocid property), and applies cleanup:
+     * <ul>
+     *   <li>If {@link #deleteOnClean} is true, deletes the channels.</li>
+     *   <li>Otherwise, marks them as inactive with an updated timestamp.</li>
+     * </ul>
+     * </p>
+     *
+     * <p>Clears the IOC from both the registry and channel state map after cleanup.</p>
+     *
+     * @param event the connection closed event.
+     */
     @Override
     public void connectionClosed(ConnectionClosedEvent event) {
         log.info(() -> "[CFRecSyncProcessor] connectionClosed source=" + event.sourceAddress()
@@ -707,7 +831,22 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         return Map.copyOf(parsed);
     }
 
-    // Shared metadata copied into every channel emitted for a single commit.
+    /**
+     * Shared metadata collected from a transaction and copied into every channel emitted for that
+     * transaction. This avoids repeating IOC metadata computation for each record.
+     *
+     * <p>Fields include:
+     * <ul>
+     *   <li>{@code hostName}: The IOC's host name (from HOSTNAME clientInfo or fallback to sourceHost).</li>
+     *   <li>{@code iocName}: The IOC's logical name (from IOCNAME clientInfo or fallback to port/sourceAddress).</li>
+     *   <li>{@code iocId}: Unique IOC identifier (typically host:port).</li>
+     *   <li>{@code iocIp}: The IOC's IP address (from sourceHost or fallback to sourceAddress).</li>
+     *   <li>{@code timestamp}: Transaction commit time in ISO-8601 format.</li>
+     *   <li>{@code caPort}, {@code pvaPort}: Optional channel access and PVA server ports.</li>
+     *   <li>{@code mappedEnvironmentProperties}: Properties derived from configured environment variable mappings.</li>
+     * </ul>
+     * </p>
+     */
     private record ChannelContext(
             String hostName,
             String iocName,
@@ -720,7 +859,14 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     ) {
     }
 
-    // Metadata about a connected IOC, tracked for shutdown cleanup.
+    /**
+     * Metadata about a connected IOC, tracked for shutdown cleanup.
+     *
+     * <p>Allows the processor to know which IOCs to clean up when the application shuts down,
+     * even if some IOCs are not currently connected.</p>
+     *
+     * <p>Fields include source address, host, port, IOC name, host name, owner, and connection timestamp.</p>
+     */
     private record IocInfo(
             String iocId,
             String sourceAddress,
@@ -733,6 +879,19 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     ) {
     }
 
+    /**
+     * Per-IOC record state tracking for delete message resolution.
+     *
+     * <p>Maintains two maps:
+     * <ul>
+     *   <li>{@code primaryRecordNamesByRecId}: recId → primary record name for each record.</li>
+     *   <li>{@code aliasNamesByRecId}: recId → list of alias names (if any).</li>
+     * </ul>
+     * </p>
+     *
+     * <p>When a delete message arrives with only a recId, this state allows the processor to look
+     * up which primary record and aliases to delete from ChannelFinder.</p>
+     */
     private static final class IocChannelState {
         private final Map<Integer, String> primaryRecordNamesByRecId = new LinkedHashMap<>();
         private final Map<Integer, List<String>> aliasNamesByRecId = new LinkedHashMap<>();
