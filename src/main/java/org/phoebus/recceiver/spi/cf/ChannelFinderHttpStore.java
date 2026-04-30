@@ -23,6 +23,24 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+/**
+ * HTTP client implementation of the ChannelFinderStore interface.
+ *
+ * <p>Communicates with a ChannelFinder REST service to query and update channels. The service URL
+ * is normalized to ensure it ends with "/" so that {@link URI#resolve(String)} correctly handles
+ * relative paths.</p>
+ *
+ * <p><strong>Endpoints:</strong>
+ * <ul>
+ *   <li><strong>GET /resources/channels/{name}</strong>: Fetch a single channel by name.</li>
+ *   <li><strong>GET /resources/channels?property=value</strong>: Search channels by property.</li>
+ *   <li><strong>POST /resources/channels</strong>: Create or update a list of channels.
+ *       The request body is a JSON array of channel objects.</li>
+ *   <li><strong>DELETE /resources/channels/{name}</strong>: Delete a single channel.</li>
+ *   <li><strong>POST /resources/properties/{name}</strong>: Create a property (if it does not exist).</li>
+ * </ul>
+ * </p>
+ */
 public class ChannelFinderHttpStore implements ChannelFinderStore {
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
 
@@ -58,6 +76,21 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
         return Map.copyOf(found);
     }
 
+    /**
+     * Finds channels by a property name and value.
+     *
+     * <p>Constructs a GET request to `/resources/channels?propertyName=propertyValue` and deserializes
+     * the response into a map of channel name → ChannelFinderChannel.</p>
+     *
+     * <p>Both the property name and value are URL-encoded to handle special characters.</p>
+     *
+     * @param propertyName the ChannelFinder property name to search by (e.g., "iocid").
+     * @param propertyValue the property value to match.
+     * @return a map of channel name → ChannelFinderChannel. Empty if no channels match.
+     *         Returns an empty map on 404 (property not found).
+     *
+     * @throws IllegalStateException if the request fails or the response body cannot be decoded.
+     */
     @Override
     public Map<String, ChannelFinderChannel> findByProperty(String propertyName, String propertyValue) {
         HttpRequest request = requestBuilder(channelsByPropertyUri(propertyName, propertyValue)).GET().build();
@@ -86,6 +119,21 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
         }
     }
 
+    /**
+     * Updates a collection of channels in ChannelFinder.
+     *
+     * <p>Constructs a POST request to `/resources/channels` with a JSON body containing all channels.
+     * The ChannelFinder service automatically handles merging: if a channel exists, its properties
+     * are updated; if it does not exist, it is created.</p>
+     *
+     * <p>Each channel is converted to a ChannelFinder-compatible payload (CFChannel) with its
+     * properties serialized as a list of CFProperty objects (each with name, owner, value).</p>
+     *
+     * @param channels the collection of channels to create or update. If empty, this method returns
+     *                 immediately without making an HTTP request.
+     *
+     * @throws IllegalStateException if the HTTP request fails or returns a non-2xx status.
+     */
     @Override
     public void updateChannels(Collection<ChannelFinderChannel> channels) {
         if (channels.isEmpty()) {
@@ -180,24 +228,69 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
         }
     }
 
+    /**
+     * Constructs the URI for a single channel endpoint.
+     *
+     * <p>Format: `/resources/channels/{channelName}` (URL-encoded).</p>
+     *
+     * @param channelName the channel name to encode in the path.
+     * @return the full URI for this channel.
+     */
     private URI channelUri(String channelName) {
         return serviceUri.resolve("resources/channels/" + encodePathSegment(channelName));
     }
 
+    /**
+     * Constructs the URI for the channels collection endpoint.
+     *
+     * <p>Format: `/resources/channels`.</p>
+     *
+     * @return the full URI for bulk channel operations.
+     */
     private URI channelsUri() {
         return serviceUri.resolve("resources/channels");
     }
 
+    /**
+     * Constructs the URI for searching channels by property.
+     *
+     * <p>Format: `/resources/channels?propertyName=propertyValue` (both URL-encoded).</p>
+     *
+     * @param propertyName the property name to search by.
+     * @param propertyValue the property value to match.
+     * @return the full URI for the property search query.
+     */
     private URI channelsByPropertyUri(String propertyName, String propertyValue) {
         String query = "resources/channels?" + encodePathSegment(propertyName)
                 + "=" + encodePathSegment(propertyValue);
         return serviceUri.resolve(query);
     }
 
+    /**
+     * Constructs the URI for a property endpoint.
+     *
+     * <p>Format: `/resources/properties/{propertyName}` (URL-encoded).</p>
+     *
+     * @param propertyName the property name to encode in the path.
+     * @return the full URI for this property.
+     */
     private URI propertyUri(String propertyName) {
         return serviceUri.resolve("resources/properties/" + encodePathSegment(propertyName));
     }
 
+    /**
+     * Normalizes the ChannelFinder service URI by ensuring it ends with "/".
+     *
+     * <p>This allows {@link URI#resolve(String)} to correctly resolve relative paths. For example:
+     * <ul>
+     *   <li>Input: "http://localhost:9090/ChannelFinder"</li>
+     *   <li>Output: "http://localhost:9090/ChannelFinder/"</li>
+     * </ul>
+     * </p>
+     *
+     * @param serviceUri the service URI to normalize.
+     * @return the normalized URI (guaranteed to end with "/").
+     */
     private static URI normalizeBaseUri(URI serviceUri) {
         String value = serviceUri.toString();
         if (!value.endsWith("/")) {
@@ -206,6 +299,14 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
         return URI.create(value);
     }
 
+    /**
+     * URL-encodes a path segment (channel name, property name) for safe inclusion in a URI path.
+     *
+     * <p>Handles special characters and ensures the segment is percent-encoded.</p>
+     *
+     * @param value the value to encode.
+     * @return the URL-encoded segment.
+     */
     private static String encodePathSegment(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
