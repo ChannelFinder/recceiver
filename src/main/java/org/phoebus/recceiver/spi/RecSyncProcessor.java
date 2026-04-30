@@ -87,6 +87,9 @@ public interface RecSyncProcessor {
      * e.g., due to network fault, timeout, or EOF. Implementations should treat this as immediate
      * IOC unavailability and perform appropriate cleanup.</p>
      *
+     * <p>This is distinct from {@code transaction.connected() == false}, which is a graceful disconnect
+     * signaled by the IOC within a transaction.</p>
+     *
      * @param event the connection closed event containing the source address and close reason.
      */
     default void connectionClosed(ConnectionClosedEvent event) {
