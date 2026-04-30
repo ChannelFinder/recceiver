@@ -82,7 +82,6 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private boolean aliasEnabled;
     private Set<String> infoTagWhitelist = Set.of();
     private Map<String, String> environmentVarMappings = Map.of();
-    private Set<String> managedProperties = Set.of();  // Properties managed by recceiver for property merging
 
     // IOC connection registry: tracks all IOCs that have connected to this processor.
     // Key = iocId (e.g., "host:port"), Value = IocInfo metadata
