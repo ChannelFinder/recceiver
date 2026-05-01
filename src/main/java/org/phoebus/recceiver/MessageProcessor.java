@@ -196,7 +196,12 @@ public class MessageProcessor {
                         }
                         break;
                     case 0x0005:
-                        log.info("received 0x0005 - upload completed, starting ping/pong");
+                        // The IOC signals that its record upload is complete.
+                        // Dispatch the transaction asynchronously (CF upload runs on a virtual thread)
+                        // so this message-reading thread is immediately free for ping/pong.
+                        // Keeping ping/pong running during CF upload prevents the IOC from closing
+                        // the connection due to missed pings on large initial batches.
+                        log.info("received 0x0005 (IOC upload complete) source=" + sourceAddress());
                         if (log.isLoggable(Level.FINER)) {
                             log.finer("upload done payload=" + String.valueOf(StandardCharsets.US_ASCII.decode(message.msgBody)));
                         }
@@ -336,12 +341,20 @@ public class MessageProcessor {
                 Map.copyOf(clientInfos),
                 initialCommitPending,
                 true);
-        processorDispatcher.dispatchCommit(transaction);
+        // Clear local state immediately so incoming messages can accumulate for the next transaction
+        // regardless of how long the current dispatch takes.
         initialCommitPending = false;
         recordsToAdd.clear();
         recordsToDelete.clear();
         infoMessages.clear();
         clientInfos.clear();
+
+        // Always dispatch asynchronously. The message-reading thread must remain free to process
+        // pong replies during CF uploads. For large initial batches (100k+ channels) the upload
+        // can take minutes; blocking this thread would prevent any pings from being sent and the
+        // IOC would close the connection with an EOF before the upload finishes.
+        Thread.ofVirtual().name("recceiver-commit-", 0).start(() ->
+                processorDispatcher.dispatchCommit(transaction));
     }
 
     private void notifyConnectionClosed(String reason) {

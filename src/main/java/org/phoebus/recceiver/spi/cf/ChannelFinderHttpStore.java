@@ -157,6 +157,7 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
                 .POST(jsonBody(payload))
                 .build();
         sendExpectingSuccess(request, "update channels");
+        log.info(() -> "Completed uploading to ChannelFinder with " + channelCount + " channels");
     }
 
     @Override
