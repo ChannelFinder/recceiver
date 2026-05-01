@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.logging.Logger;
 
 /**
  * HTTP client implementation of the ChannelFinderStore interface.
@@ -42,7 +43,11 @@ import java.util.Set;
  * </p>
  */
 public class ChannelFinderHttpStore implements ChannelFinderStore {
+    private static final Logger log = Logger.getLogger(ChannelFinderHttpStore.class.getName());
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration MAX_BULK_UPDATE_TIMEOUT = Duration.ofMinutes(5);
+    private static final int CHANNELS_PER_TIMEOUT_STEP = 250;
+    private static final Duration TIMEOUT_STEP = Duration.ofSeconds(1);
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -139,11 +144,16 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
         if (channels.isEmpty()) {
             return;
         }
+        int channelCount = channels.size();
+        Duration timeout = bulkUpdateTimeout(channelCount);
+        log.info(() -> "Updating ChannelFinder with " + channelCount + " channels (timeout="
+                + timeout.toSeconds() + "s)");
+
         List<CFChannel> payload = new ArrayList<>();
         for (ChannelFinderChannel channel : channels) {
             payload.add(toPayload(channel));
         }
-        HttpRequest request = requestBuilder(channelsUri())
+        HttpRequest request = requestBuilder(channelsUri(), timeout)
                 .POST(jsonBody(payload))
                 .build();
         sendExpectingSuccess(request, "update channels");
@@ -210,14 +220,29 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
     }
 
     private HttpRequest.Builder requestBuilder(URI uri) {
+        return requestBuilder(uri, DEFAULT_TIMEOUT);
+    }
+
+    private HttpRequest.Builder requestBuilder(URI uri, Duration timeout) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-                .timeout(DEFAULT_TIMEOUT)
+                .timeout(timeout)
                 .header("Accept", "application/json")
                 .header("Content-Type", "application/json");
         if (authorizationHeader != null && !authorizationHeader.isBlank()) {
             builder.header("Authorization", authorizationHeader);
         }
         return builder;
+    }
+
+    // Scale POST timeout with batch size: base + 1s per 250 channels, capped to avoid unbounded waits.
+    private static Duration bulkUpdateTimeout(int channelCount) {
+        int safeCount = Math.max(0, channelCount);
+        long extraSeconds = safeCount / CHANNELS_PER_TIMEOUT_STEP;
+        Duration scaled = DEFAULT_TIMEOUT.plus(TIMEOUT_STEP.multipliedBy(extraSeconds));
+        if (scaled.compareTo(MAX_BULK_UPDATE_TIMEOUT) > 0) {
+            return MAX_BULK_UPDATE_TIMEOUT;
+        }
+        return scaled;
     }
 
     private HttpRequest.BodyPublisher jsonBody(Object value) {
