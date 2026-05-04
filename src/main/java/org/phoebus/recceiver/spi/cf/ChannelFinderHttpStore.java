@@ -2,7 +2,6 @@ package org.phoebus.recceiver.spi.cf;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -34,7 +33,8 @@ import java.util.logging.Logger;
  * <p><strong>Endpoints:</strong>
  * <ul>
  *   <li><strong>GET /resources/channels/{name}</strong>: Fetch a single channel by name.</li>
- *   <li><strong>GET /resources/channels?property=value</strong>: Search channels by property.</li>
+ *   <li><strong>GET /resources/scroll</strong>: Start a scroll query by property.</li>
+ *   <li><strong>GET /resources/scroll/{scrollId}</strong>: Continue a scroll query when response id is present.</li>
  *   <li><strong>POST /resources/channels</strong>: Create or update a list of channels.
  *       The request body is a JSON array of channel objects.</li>
  *   <li><strong>DELETE /resources/channels/{name}</strong>: Delete a single channel.</li>
@@ -84,44 +84,70 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
     /**
      * Finds channels by a property name and value.
      *
-     * <p>Constructs a GET request to `/resources/channels?propertyName=propertyValue` and deserializes
-     * the response into a map of channel name → ChannelFinderChannel.</p>
-     *
-     * <p>Both the property name and value are URL-encoded to handle special characters.</p>
+     * <p>Uses ChannelFinder scroll search with two endpoints:
+     * first call `/resources/scroll`, then follow-up calls to `/resources/scroll/{scrollId}` while
+     * response `id` is present. This avoids server-side result limits such as the 10k cap of
+     * non-scroll queries.</p>
      *
      * @param propertyName the ChannelFinder property name to search by (e.g., "iocid").
      * @param propertyValue the property value to match.
-     * @return a map of channel name → ChannelFinderChannel. Empty if no channels match.
-     *         Returns an empty map on 404 (property not found).
-     *
+     * @return a map of channel name -> ChannelFinderChannel. Empty if no channels match.
      * @throws IllegalStateException if the request fails or the response body cannot be decoded.
      */
     @Override
     public Map<String, ChannelFinderChannel> findByProperty(String propertyName, String propertyValue) {
-        HttpRequest request = requestBuilder(channelsByPropertyUri(propertyName, propertyValue)).GET().build();
-        HttpResponse<String> response = send(request, "find channels by property " + propertyName);
-        int status = response.statusCode();
-        if (status == 404) {
-            return Map.of();
-        }
-        if (status < 200 || status >= 300) {
-            throw new IllegalStateException("ChannelFinder request failed while finding channels by property '"
-                    + propertyName + "' with status " + status + ": " + response.body());
-        }
-        try {
-            List<CFChannel> payloads = objectMapper.readValue(response.body(), new TypeReference<>() {
-            });
-            Map<String, ChannelFinderChannel> found = new LinkedHashMap<>();
-            for (CFChannel payload : payloads) {
-                if (payload != null && payload.name != null) {
-                    found.put(payload.name, fromPayload(payload));
+        Map<String, ChannelFinderChannel> found = new LinkedHashMap<>();
+        String scrollId = null;
+
+        while (true) {
+            URI uri;
+            if (scrollId == null) {
+                uri = startScrollChannelsUri(propertyName, propertyValue);
+            } else {
+                uri = continueScrollChannelsUri(scrollId, propertyName, propertyValue);
+            }
+            HttpRequest request = requestBuilder(uri).GET().build();
+            HttpResponse<String> response = send(request, "scroll channels by property " + propertyName);
+            int status = response.statusCode();
+            if (status == 404) {
+                return Map.copyOf(found);
+            }
+            if (status < 200 || status >= 300) {
+                throw new IllegalStateException("ChannelFinder request failed while scrolling channels by property '"
+                        + propertyName + "' with status " + status + ": " + response.body());
+            }
+
+            ScrollResult payload;
+            try {
+                payload = objectMapper.readValue(response.body(), ScrollResult.class);
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to decode ChannelFinder scroll response for property '"
+                        + propertyName + "'", e);
+            }
+
+            if (payload == null || payload.channels == null || payload.channels.isEmpty()) {
+                break;
+            }
+
+            for (CFChannel channel : payload.channels) {
+                if (channel != null && channel.name != null) {
+                    found.put(channel.name, fromPayload(channel));
                 }
             }
-            return Map.copyOf(found);
-        } catch (IOException e) {
-            throw new IllegalStateException("Failed to decode ChannelFinder channel response for property '"
-                    + propertyName + "'", e);
+
+            String nextScrollId = normalized(payload.id);
+            if (nextScrollId == null) {
+                break;
+            }
+            if (nextScrollId.equals(scrollId)) {
+                log.warning(() -> "ChannelFinder scroll returned repeated id '" + nextScrollId
+                        + "' while finding property '" + propertyName + "'; stopping to avoid infinite loop");
+                break;
+            }
+            scrollId = nextScrollId;
         }
+
+        return Map.copyOf(found);
     }
 
     /**
@@ -278,18 +304,27 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
     }
 
     /**
-     * Constructs the URI for searching channels by property.
+     * Constructs the URI for starting a scroll query by property.
      *
-     * <p>Format: `/resources/channels?propertyName=propertyValue` (both URL-encoded).</p>
-     *
-     * @param propertyName the property name to search by.
-     * @param propertyValue the property value to match.
-     * @return the full URI for the property search query.
+     * <p>Format: `/resources/scroll?propertyName=propertyValue`.</p>
      */
-    private URI channelsByPropertyUri(String propertyName, String propertyValue) {
-        String query = "resources/channels?" + encodePathSegment(propertyName)
-                + "=" + encodePathSegment(propertyValue);
-        return serviceUri.resolve(query);
+    private URI startScrollChannelsUri(String propertyName, String propertyValue) {
+        StringBuilder query = new StringBuilder("resources/scroll?")
+                .append(encodePathSegment(propertyName)).append("=").append(encodePathSegment(propertyValue));
+        return serviceUri.resolve(query.toString());
+    }
+
+    /**
+     * Constructs the URI for continuing a scroll query with a scroll id.
+     *
+     * <p>Format: `/resources/scroll/{scrollId}?propertyName=propertyValue`.</p>
+     */
+    private URI continueScrollChannelsUri(String scrollId, String propertyName, String propertyValue) {
+        StringBuilder query = new StringBuilder("resources/scroll/")
+                .append(encodePathSegment(scrollId))
+                .append("?")
+                .append(encodePathSegment(propertyName)).append("=").append(encodePathSegment(propertyValue));
+        return serviceUri.resolve(query.toString());
     }
 
     /**
@@ -368,6 +403,23 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
                 payload.owner == null ? CFRecSyncProcessor.DEFAULT_OWNER : payload.owner,
                 properties
         );
+    }
+
+    private static String normalized(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private static final class ScrollResult {
+        public String id;
+        public List<CFChannel> channels;
+
+        ScrollResult() {
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
