@@ -24,6 +24,7 @@ public class MessageProcessor {
     private static final Logger log = Logger.getLogger(MessageProcessor.class.getName());
 
     private final SocketChannel channel;
+    private final String connectionSourceAddress;
     private final long pingIntervalSeconds;
     private final int serverKey;
     private final RecSyncProcessorDispatcher processorDispatcher;
@@ -49,6 +50,7 @@ public class MessageProcessor {
 
     public MessageProcessor(SocketChannel channel, long pingIntervalSeconds, int serverKey, RecSyncProcessorDispatcher processorDispatcher, int readBufferSize) {
         this.channel = channel;
+        this.connectionSourceAddress = resolveSourceAddress(channel);
         this.pingIntervalSeconds = pingIntervalSeconds;
         this.serverKey = serverKey;
         this.processorDispatcher = processorDispatcher == null ? RecSyncProcessorDispatcher.empty() : processorDispatcher;
@@ -366,6 +368,10 @@ public class MessageProcessor {
     }
 
     private String sourceAddress() {
+        return connectionSourceAddress;
+    }
+
+    private static String resolveSourceAddress(SocketChannel channel) {
         try {
             return String.valueOf(channel.getRemoteAddress());
         } catch (IOException e) {

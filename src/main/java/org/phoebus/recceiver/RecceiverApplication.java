@@ -5,7 +5,6 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.PropertySource;
@@ -13,6 +12,7 @@ import org.springframework.context.annotation.PropertySource;
 import javax.annotation.PreDestroy;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.SocketException;
 import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -187,17 +187,45 @@ public class RecceiverApplication implements CommandLineRunner {
                     p.process();
                 }
             } catch (IOException e) {
+                p.shutdown(disconnectReason(e));
                 try {
                     client.close();
                 } catch (IOException ex) {
                     log.log(Level.WARNING, "Failed to close client channel", ex);
                 }
-                log.log(Level.WARNING, "Connection processing failed", e);
+                if (parseDisconnectEvents(e)) {
+                    log.log(Level.INFO, "Connection closed by peer: {0}", e.getMessage());
+                } else {
+                    log.log(Level.WARNING, "Connection processing failed", e);
+                }
             } finally {
                 p.shutdown();
             }
 
         });
+    }
+
+    private static boolean parseDisconnectEvents(IOException e) {
+        if (!(e instanceof SocketException)) {
+            return false;
+        }
+        String message = e.getMessage();
+        if (message == null) {
+            return false;
+        }
+        String lower = message.toLowerCase();
+        return lower.contains("connection reset") || lower.contains("broken pipe") || lower.contains("forcibly closed");
+    }
+
+    private static String disconnectReason(IOException e) {
+        if (parseDisconnectEvents(e)) {
+            return "connection reset";
+        }
+        String message = e.getMessage();
+        if (message == null || message.isBlank()) {
+            return "io error";
+        }
+        return "io error: " + message;
     }
 
     private Map<String, String> buildProcessorOptions() {
