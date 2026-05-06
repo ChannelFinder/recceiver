@@ -463,7 +463,7 @@ class CFRecSyncProcessorTest {
     }
 
     @Test
-    void destroyMarksChannelsInactiveWhenDeleteOnShutdownFalse() {
+    void destroyMarksChannelsUndefinedWhenDeleteOnShutdownFalse() {
         TestStore store = new TestStore();
         store.findByPropertyResult = Map.of(
                 "pv:one", new ChannelFinderChannel("pv:one", "owner1", Map.of(
@@ -496,13 +496,13 @@ class CFRecSyncProcessorTest {
 
         store.updatedChannels.clear();
 
-        // Destroy should mark channels as inactive, not delete them
+        // Destroy should mark channels as undefined, not delete them
         processor.destroy();
 
         // Verify channels were updated (not deleted)
         assertEquals(1, store.updatedChannels.size());
         ChannelFinderChannel updated = store.updatedChannels.get(0);
-        assertEquals(CFRecSyncProcessor.INACTIVE, updated.property(CFRecSyncProcessor.PV_STATUS_PROPERTY));
+        assertEquals(CFRecSyncProcessor.UNDEFINED, updated.property(CFRecSyncProcessor.PV_STATUS_PROPERTY));
         assertEquals(0, store.deletedChannelNames.size());
     }
 

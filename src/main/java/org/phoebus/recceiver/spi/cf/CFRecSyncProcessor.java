@@ -115,6 +115,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     public static final String PVA_PORT_PROPERTY = "pvaPort";
     public static final String ACTIVE = "Active";
     public static final String INACTIVE = "Inactive";
+    public static final String UNDEFINED = "Undefined";
     public static final String DEFAULT_OWNER = "cfstore";
 
     private static final String RECCEIVER_ID = resolveRecceiverId();
@@ -693,14 +694,14 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             log.info(deleteMsg);
             store.deleteChannels(existing.keySet());
         } else {
-            String inactiveMsg = "[CFRecSyncProcessor] marking " + existing.size() + " channels as inactive for IOC " + iocId;
+            String inactiveMsg = "[CFRecSyncProcessor] marking " + existing.size() + " channels as undefined for IOC " + iocId;
             System.err.println(inactiveMsg);
             log.info(inactiveMsg);
             String now = OffsetDateTime.now().toString();
             Collection<ChannelFinderChannel> inactiveChannels = new ArrayList<>();
             for (ChannelFinderChannel channel : existing.values()) {
                 Map<String, String> properties = new LinkedHashMap<>(channel.properties());
-                properties.put(PV_STATUS_PROPERTY, INACTIVE);
+                properties.put(PV_STATUS_PROPERTY, UNDEFINED);
                 properties.put(TIME_PROPERTY, now);
                 inactiveChannels.add(new ChannelFinderChannel(channel.name(), channel.owner(), properties));
             }
