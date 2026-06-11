@@ -45,6 +45,38 @@ By default, this is controlled by `src/main/resources/application.properties`.
 mvn test
 ```
 
+### 4) Run with Docker
+
+Build and run the container image:
+
+```shell
+docker build -t recceiver:local .
+docker run --rm -p 5064:5064/tcp -p 5049:5049/udp recceiver:local
+```
+
+Notes:
+
+- Container defaults set `TCP_BIND_ADDRESS=0.0.0.0` and `TCP_PORT=5064` so the TCP listener is reachable from outside the container.
+- Override properties with environment variables (Spring relaxed binding), for example:
+  - `TCP_PORT=5070`
+  - `UDP_BROADCAST_PORT=5049`
+  - `RECCEIVER_CF_SERVICE_URL=http://host.docker.internal:9090/ChannelFinder`
+
+### 5) Run with Docker Compose
+
+```shell
+docker compose up --build
+```
+
+Compose file: `docker-compose.yml`
+
+Compose is configured with `network_mode: host`.
+
+- No `ports:` mapping is needed in this mode.
+- Recceiver listens directly on the host network using `TCP_PORT`/`UDP_BROADCAST_PORT`.
+- `RECCEIVER_CF_SERVICE_URL` defaults to `http://localhost:9090/ChannelFinder` in compose.
+- Host networking is primarily a Linux Docker mode. On Docker Desktop (Windows/macOS), use the direct `docker run -p ...` flow if host mode is unavailable.
+
 ---
 
 ## How-To Guides
