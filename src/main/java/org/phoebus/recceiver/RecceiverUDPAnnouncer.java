@@ -2,6 +2,7 @@ package org.phoebus.recceiver;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.charset.StandardCharsets;
@@ -26,6 +27,7 @@ public class RecceiverUDPAnnouncer implements Runnable {
         this.broadcastAddress = broadcastAddress;
         this.broadcastPort = broadcastPort;
         DatagramChannel datagramChannel = DatagramChannel.open();
+        datagramChannel.setOption(StandardSocketOptions.SO_BROADCAST, true);
         this.client = datagramChannel.bind(null);
     }
 

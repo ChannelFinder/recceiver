@@ -37,6 +37,6 @@ jobs:
         run: mkdir -p staging && cp target/*.jar staging
       - uses: actions/upload-artifact@v4
         with:
-          name: recceiver-package
+          name: recceiver-package-${{ matrix.os }}
           path: staging
 
