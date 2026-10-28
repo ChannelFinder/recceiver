@@ -37,14 +37,13 @@ import java.util.logging.Logger;
  *   <li><strong>GET /resources/scroll/{scrollId}</strong>: Continue a scroll query when response id is present.</li>
  *   <li><strong>POST /resources/channels</strong>: Create or update a list of channels.
  *       The request body is a JSON array of channel objects.</li>
- *   <li><strong>DELETE /resources/channels/{name}</strong>: Delete a single channel.</li>
+ *   <li><strong>DELETE /resources/channels</strong>: Delete multiple channels in one request body list.</li>
  *   <li><strong>POST /resources/properties/{name}</strong>: Create a property (if it does not exist).</li>
  * </ul>
  * </p>
  */
 public class ChannelFinderHttpStore implements ChannelFinderStore {
     private static final Logger log = Logger.getLogger(ChannelFinderHttpStore.class.getName());
-    private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration MAX_BULK_UPDATE_TIMEOUT = Duration.ofMinutes(5);
     private static final int CHANNELS_PER_TIMEOUT_STEP = 250;
     private static final Duration TIMEOUT_STEP = Duration.ofSeconds(1);
@@ -53,20 +52,26 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
     private final ObjectMapper objectMapper;
     private final URI serviceUri;
     private final String authorizationHeader;
+    private final Duration timeout;
 
-    public ChannelFinderHttpStore(String serviceUrl) {
-        this(HttpClient.newHttpClient(), defaultObjectMapper(), URI.create(serviceUrl), null);
+    public ChannelFinderHttpStore(String serviceUrl, Duration timeout) {
+        this(HttpClient.newHttpClient(), defaultObjectMapper(), URI.create(serviceUrl), null, timeout);
     }
 
-    public ChannelFinderHttpStore(String serviceUrl, String username, String password) {
-        this(HttpClient.newHttpClient(), defaultObjectMapper(), URI.create(serviceUrl), basicAuth(username, password));
+    public ChannelFinderHttpStore(String serviceUrl, String username, String password, Duration timeout) {
+        this(HttpClient.newHttpClient(), defaultObjectMapper(), URI.create(serviceUrl), basicAuth(username, password), timeout);
     }
 
-    ChannelFinderHttpStore(HttpClient httpClient, ObjectMapper objectMapper, URI serviceUri, String authorizationHeader) {
+    ChannelFinderHttpStore(HttpClient httpClient, ObjectMapper objectMapper, URI serviceUri, String authorizationHeader,
+                           Duration timeout) {
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.serviceUri = normalizeBaseUri(Objects.requireNonNull(serviceUri, "serviceUri"));
         this.authorizationHeader = authorizationHeader;
+        this.timeout = Objects.requireNonNull(timeout, "timeout");
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive: " + timeout);
+        }
     }
 
     @Override
@@ -188,10 +193,15 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
 
     @Override
     public void deleteChannels(Collection<String> channelNames) {
-        for (String channelName : channelNames) {
-            HttpRequest request = requestBuilder(channelUri(channelName)).DELETE().build();
-            sendExpectingSuccess(request, "delete channel " + channelName);
+        if (channelNames.isEmpty()) {
+            return;
         }
+
+        List<String> names = new ArrayList<>(channelNames);
+        HttpRequest request = requestBuilder(channelsUri(), bulkUpdateTimeout(names.size()))
+                .method("DELETE", jsonBody(names))
+                .build();
+        sendExpectingSuccess(request, "delete channels " + names.size());
     }
 
     @Override
@@ -247,7 +257,7 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
     }
 
     private HttpRequest.Builder requestBuilder(URI uri) {
-        return requestBuilder(uri, DEFAULT_TIMEOUT);
+        return requestBuilder(uri, timeout);
     }
 
     private HttpRequest.Builder requestBuilder(URI uri, Duration timeout) {
@@ -261,15 +271,11 @@ public class ChannelFinderHttpStore implements ChannelFinderStore {
         return builder;
     }
 
-    // Scale POST timeout with batch size: base + 1s per 250 channels, capped to avoid unbounded waits.
-    private static Duration bulkUpdateTimeout(int channelCount) {
-        int safeCount = Math.max(0, channelCount);
-        long extraSeconds = safeCount / CHANNELS_PER_TIMEOUT_STEP;
-        Duration scaled = DEFAULT_TIMEOUT.plus(TIMEOUT_STEP.multipliedBy(extraSeconds));
-        if (scaled.compareTo(MAX_BULK_UPDATE_TIMEOUT) > 0) {
-            return MAX_BULK_UPDATE_TIMEOUT;
-        }
-        return scaled;
+    // Scale request timeout with batch size: base + 1s per 250 channels, capped to avoid unbounded waits.
+    private Duration bulkUpdateTimeout(int channelCount) {
+        long extraSeconds = Math.max(0, channelCount) / CHANNELS_PER_TIMEOUT_STEP;
+        Duration scaled = timeout.plus(TIMEOUT_STEP.multipliedBy(extraSeconds));
+        return scaled.compareTo(MAX_BULK_UPDATE_TIMEOUT) > 0 ? MAX_BULK_UPDATE_TIMEOUT : scaled;
     }
 
     private HttpRequest.BodyPublisher jsonBody(Object value) {

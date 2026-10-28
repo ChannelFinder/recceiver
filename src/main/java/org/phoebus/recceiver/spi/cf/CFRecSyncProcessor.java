@@ -7,6 +7,7 @@ import org.phoebus.recceiver.spi.RecSyncTransaction;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -69,6 +70,7 @@ import java.util.logging.Logger;
  *   <li>{@code recceiver.cf.enabled} (false by default): Enable this processor.</li>
  *   <li>{@code recceiver.cf.service-url} (required if enabled): URL to the ChannelFinder service.</li>
  *   <li>{@code recceiver.cf.username} / {@code recceiver.cf.password} (optional): HTTP basic auth.</li>
+ *   <li>{@code recceiver.cf.http-timeout} (30 by default): Base HTTP timeout in seconds for ChannelFinder requests.</li>
  *   <li>{@code recceiver.cf.alias-enabled} (false by default): Publish alias records as separate channels.</li>
  *   <li>{@code recceiver.cf.infotags} (optional): Comma/space-separated list of info tag names to
  *       publish as ChannelFinder properties.</li>
@@ -86,6 +88,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     private static final String DELETE_ON_CLEAN_KEY = "recceiver.cf.delete-on-clean";
     private static final String CLEAN_ON_STARTUP_KEY = "recceiver.cf.clean-on-startup";
     private static final String DELETE_ON_SHUTDOWN_KEY = "recceiver.cf.delete-on-shutdown";
+    private static final String HTTP_TIMEOUT_KEY = "recceiver.cf.http-timeout";
     private static final String ALIAS_ENABLED_KEY = "recceiver.cf.alias-enabled";
     private static final String INFOTAGS_KEY = "recceiver.cf.infotags";
     private static final String ENVIRONMENT_VARS_KEY = "recceiver.cf.environment-vars";
@@ -134,6 +137,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
     )));
 
     private ChannelFinderStore store;
+    private Duration httpTimeout;
     private boolean deleteOnClean;
     private boolean cleanOnStartup;
     private boolean deleteOnShutdown;
@@ -169,6 +173,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
                     "recceiver.cf.username and recceiver.cf.password must both be configured when authentication is used");
         }
 
+        this.httpTimeout = Duration.ofSeconds(Long.parseLong(options.getOrDefault(HTTP_TIMEOUT_KEY, "30").trim()));
         this.store = createStore(serviceUrl, username, password);
         this.deleteOnClean = Boolean.parseBoolean(options.getOrDefault(DELETE_ON_CLEAN_KEY, "false"));
         this.cleanOnStartup = Boolean.parseBoolean(options.getOrDefault(CLEAN_ON_STARTUP_KEY, "false"));
@@ -186,6 +191,9 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         requiredProperties.addAll(environmentVarMappings.values());
         this.store.ensureProperties(requiredProperties, propertyOwner);
 
+        log.info("CFRecSyncProcessor initialized with serviceUrl=" + serviceUrl +" httpTimeout=" + httpTimeout + " cleanOnStartup=" + cleanOnStartup + " deleteOnClean=" + deleteOnClean
+                + " deleteOnShutdown=" + deleteOnShutdown + " aliasEnabled=" + aliasEnabled
+                + " infoTagWhitelist=" + infoTagWhitelist + " environmentVarMappings=" + environmentVarMappings);
         cleanupExistingActiveChannelsForRecceiver();
 
         return this;
@@ -217,6 +225,7 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
         // Startup cleanup mode: cleanOnStartup=true => delete, false => mark inactive.
         if (cleanOnStartup) {
             store.deleteChannels(activeChannels.keySet());
+            log.info("CFRecSyncProcessor startup cleanup: deleted " + activeChannels.size() + " channels for recceiverID=" + RECCEIVER_ID);
             return;
         }
 
@@ -229,12 +238,13 @@ public class CFRecSyncProcessor implements RecSyncProcessor {
             inactiveChannels.add(new ChannelFinderChannel(channel.name(), channel.owner(), properties));
         }
         store.updateChannels(inactiveChannels);
+        log.info("CFRecSyncProcessor startup cleanup: marked " + inactiveChannels.size() + " channels as Inactive for recceiverID=" + RECCEIVER_ID);
     }
 
     protected ChannelFinderStore createStore(String serviceUrl, String username, String password) {
         return username == null
-                ? new ChannelFinderHttpStore(serviceUrl)
-                : new ChannelFinderHttpStore(serviceUrl, username, password);
+                ? new ChannelFinderHttpStore(serviceUrl, httpTimeout)
+                : new ChannelFinderHttpStore(serviceUrl, username, password, httpTimeout);
     }
 
     /**
