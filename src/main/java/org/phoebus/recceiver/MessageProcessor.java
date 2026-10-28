@@ -16,12 +16,14 @@ import org.phoebus.recceiver.spi.DelRecordMessage;
 import org.phoebus.recceiver.spi.RecSyncProcessorDispatcher;
 import org.phoebus.recceiver.spi.RecSyncTransaction;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class MessageProcessor {
     private static final Logger log = Logger.getLogger(MessageProcessor.class.getName());
+    private static final ThreadFactory COMMIT_THREAD_FACTORY = Thread.ofVirtual().name("recceiver-commit-", 0).factory();
 
     private final SocketChannel channel;
     private final String connectionSourceAddress;
@@ -355,8 +357,8 @@ public class MessageProcessor {
         // pong replies during CF uploads. For large initial batches (100k+ channels) the upload
         // can take minutes; blocking this thread would prevent any pings from being sent and the
         // IOC would close the connection with an EOF before the upload finishes.
-        Thread.ofVirtual().name("recceiver-commit-", 0).start(() ->
-                processorDispatcher.dispatchCommit(transaction));
+        COMMIT_THREAD_FACTORY.newThread(() ->
+                processorDispatcher.dispatchCommit(transaction)).start();
     }
 
     private void notifyConnectionClosed(String reason) {
