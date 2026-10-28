@@ -9,7 +9,7 @@ import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.PropertySource;
 
-import javax.annotation.PreDestroy;
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketException;
@@ -25,6 +25,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -87,6 +88,9 @@ public class RecceiverApplication implements CommandLineRunner {
     @Value("${recceiver.cf.password:}")
     private String cfPassword;
 
+    @Value("${recceiver.cf.http-timeout:30}")
+    private String cfHttpTimeout;
+
     @Value("${recceiver.cf.delete-on-clean:false}")
     private String cfDeleteOnClean;
 
@@ -107,6 +111,7 @@ public class RecceiverApplication implements CommandLineRunner {
 
 
     private final ScheduledExecutorService udpAnnouncerService = Executors.newScheduledThreadPool(1);
+    private static final ThreadFactory CLIENT_THREAD_FACTORY = Thread.ofVirtual().name("recceiver-client-", 0).factory();
     private static int serverKey;
     private RecSyncProcessorDispatcher processorDispatcher;
     private volatile boolean running = true;
@@ -180,7 +185,7 @@ public class RecceiverApplication implements CommandLineRunner {
         client.configureBlocking(true);
 
         // Run each client handler on its own virtual thread.
-        Thread.ofVirtual().name("recceiver-client-", 0).start(() -> {
+        CLIENT_THREAD_FACTORY.newThread(() -> {
             MessageProcessor p = new MessageProcessor(client, Math.max(1L, Math.round(tcptimeout)), serverKey, processorDispatcher, readBufferSize);
             try {
                 while (client.isOpen() && client.isConnected()) {
@@ -202,7 +207,7 @@ public class RecceiverApplication implements CommandLineRunner {
                 p.shutdown();
             }
 
-        });
+        }).start();
     }
 
     private static boolean parseDisconnectEvents(IOException e) {
@@ -234,6 +239,7 @@ public class RecceiverApplication implements CommandLineRunner {
         options.put("recceiver.cf.service-url", cfServiceUrl);
         options.put("recceiver.cf.username", cfUsername);
         options.put("recceiver.cf.password", cfPassword);
+        options.put("recceiver.cf.http-timeout", cfHttpTimeout);
         options.put("recceiver.cf.delete-on-clean", cfDeleteOnClean);
         options.put("recceiver.cf.clean-on-startup", cfCleanOnStartup);
         options.put("recceiver.cf.delete-on-shutdown", cfDeleteOnShutdown);
