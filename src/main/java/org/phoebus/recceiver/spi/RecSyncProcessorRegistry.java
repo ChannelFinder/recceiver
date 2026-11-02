@@ -19,6 +19,7 @@ public final class RecSyncProcessorRegistry {
 
         ServiceLoader<RecSyncProcessor> directLoader = ServiceLoader.load(RecSyncProcessor.class);
         for (RecSyncProcessor processor : directLoader) {
+            log.info("Loading RecSyncProcessor via SPI: " + processor.getClass().getName());
             try {
                 RecSyncProcessor initializedProcessor = processor.init(processor.name(), initOptions);
                 if (initializedProcessor != null) {
